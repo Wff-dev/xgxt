@@ -108,9 +108,14 @@ function toMergedOrderView(rows: any[], consultState?: number): ConsultFeeOrder 
      */
     const detail = parseItemDetail(first.item_detail);
     if (detail.length > 1) {
+      /**
+       * ★ 2026-10-27 补费单的明细是「逐项费用」，但它本身不是正式学费单 ——
+       *   不能在这里被改名成「正式学费」，否则列表里会出现一张假的正式学费。
+       */
+      const isSupplement = Number(first.fee_type) === FeeType.SUPPLEMENT;
       return {
         ...main,
-        feeTypeName: '正式学费',
+        feeTypeName: isSupplement ? main.feeTypeName : '正式学费',
         itemDetail: detail,
         orderIds: [main.orderId],
         included: detail.map((d) => ({
@@ -455,8 +460,23 @@ feeRouter.post(
 
 const supplementSchema = z.object({
   consultStudentId: z.string().min(1, '必须传学生 id'),
-  /** 补费金额（单位：分），老师手填，后端不再按费用标准覆盖 */
-  amount: z.coerce.number().int().positive('补费金额必须大于 0（单位：分）'),
+  /**
+   * ★ 2026-10-27 补费明细（用户口径：「补费也要有具体明细」）
+   *
+   * 老师在前端按「学费 / 住宿费 / 餐费 / 保险费」逐项填，合计即补费单金额。
+   * 明细优先：传了 items 就以后端加总的金额为准，amount 只作老调用方的兼容入参。
+   */
+  items: z
+    .array(
+      z.object({
+        feeType: z.coerce.number().int().positive('费用项取值非法'),
+        /** 本项补缴金额（单位：分），允许 0（这次先不补这项），但整单不能都是 0 */
+        amount: z.coerce.number().int().min(0, '补缴金额不能为负（单位：分）'),
+      }),
+    )
+    .optional(),
+  /** 补费金额（单位：分）；没传 items 时用它当「一笔自定义补费」 */
+  amount: z.coerce.number().int().positive('补费金额必须大于 0（单位：分）').optional(),
   voucherUrl: z.string().optional(),
   voucherNo: z.string().max(100).optional(),
   payMethod: z.string().max(20).optional(),
@@ -477,10 +497,15 @@ feeRouter.post(
     if (!body.voucherUrl) {
       throw new BizError(BizCode.PARAM_ERROR, '请先上传缴费凭证截图');
     }
+    // 金额二选一：明细优先，都没有就直接拒绝（报人话，不说「参数错误」）
+    if (!body.items?.length && !body.amount) {
+      throw new BizError(BizCode.PARAM_ERROR, '请填写补费明细（至少一项金额大于 0）');
+    }
 
     const result = await createSupplementFee(
       body.consultStudentId,
-      body.amount,
+      // 传了明细 → 按明细加总；没传 → 老口径的一笔自定义补费
+      body.items?.length ? body.items.map((i) => ({ feeType: i.feeType as FeeType, amount: i.amount })) : body.amount!,
       { name: operator.userName, title: operator.roleTitle },
       {
         voucherUrl: body.voucherUrl,

@@ -29,6 +29,8 @@ import type {
   ConsultFeeStats,
   ConsultFeeStatus,
   ConsultSupplementPlan,
+  // ★ 2026-10-27 补费明细（用户口径：「补费也要有具体明细」）
+  ConsultSupplementItem,
 } from 'shared-types/consult';
 import { ConsultFeeStatus as CFS, CONSULT_FEE_STATUS_NAME } from 'shared-types/consult';
 import { db } from '../utils/db';
@@ -390,6 +392,15 @@ export const PENDING_FEE_STATUSES: number[] = [CFS.NO_VOUCHER, CFS.PENDING];
 
 /** 一张收款单覆盖的费用类型：合并单读 item_detail，老数据读 fee_type */
 export function typesOfOrder(row: any): FeeType[] {
+  /**
+   * ★ 2026-10-27 补费单必须先按 fee_type 返回 [补学费]
+   *
+   * 补费单的 item_detail 现在是逐项明细（学费 / 住宿费 / 餐费 / 保险费），
+   * 但它业务上仍是一张「补学费」：不占用学费额度、不参与「全款是否到齐」判定。
+   * 若让它按明细返回，补费到账后会被当成「学费已到账」，
+   * 转正式的缺口就会凭空消失 —— 属于会把业务算错的坑，必须挡住。
+   */
+  if (Number(row?.fee_type) === FeeType.SUPPLEMENT) return [FeeType.SUPPLEMENT];
   if (row?.item_detail) {
     try {
       const arr = JSON.parse(row.item_detail);
@@ -1146,7 +1157,17 @@ export async function createFees(
  * ============================================================ */
 export async function createSupplementFee(
   consultStudentId: string,
-  amount: number,
+  /**
+   * ★ 2026-10-27 用户口径：「补费也要有具体明细」
+   *
+   *   · 传数组 → 按费用项逐项补（学费 / 住宿费 / 餐费 / 保险费），合计即补费单金额；
+   *   · 传数字 → 老调用方的「一笔自定义补费」，内部等价于 [{ feeType: SUPPLEMENT, amount }]。
+   *
+   * ⚠️ 落库的 fee_type 仍是 SUPPLEMENT（一张「补学费」单）：
+   *    明细只进 item_detail，不能拆成多张单 —— 否则会占用学费额度、
+   *    还会让「全款是否到齐」「补费转正」这些判定算错。
+   */
+  amountOrItems: number | ConsultSupplementItem[],
   operator: { name: string; title?: string },
   opts: {
     /** ★ 只要缴费就要有凭证 —— 与发起收费同一铁律 */
@@ -1161,6 +1182,45 @@ export async function createSupplementFee(
   if (!stu) {
     throw new BizError(BizCode.STUDENT_NOT_FOUND, '学生不存在');
   }
+
+  /* ---------- 明细归一化：只保留金额 > 0 的项，合计即单据金额 ---------- */
+  const rawItems: ConsultSupplementItem[] = Array.isArray(amountOrItems)
+    ? amountOrItems
+    : [{ feeType: FeeType.SUPPLEMENT, amount: Number(amountOrItems) }];
+
+  const detailItems = rawItems
+    .map((i) => ({ feeType: Number(i?.feeType), amount: Math.round(Number(i?.amount)) }))
+    .filter((i) => Number.isFinite(i.amount) && i.amount > 0);
+
+  if (!detailItems.length) {
+    throw new BizError(BizCode.PARAM_ERROR, '补费金额必须大于 0');
+  }
+
+  /**
+   * 明细里的费用项只允许「全款 4 项」或兜底的自定义补费项 ——
+   * 直接调接口塞个乱七八糟的类型进来，账单就废了。
+   */
+  const allowedTypes = new Set<number>([...FULL_FEE_TYPES, FeeType.SUPPLEMENT]);
+  const seenTypes = new Set<number>();
+  for (const i of detailItems) {
+    if (!allowedTypes.has(i.feeType)) {
+      throw new BizError(BizCode.PARAM_ERROR, `补费明细里的费用项不合法（${i.feeType}）`);
+    }
+    if (seenTypes.has(i.feeType)) {
+      throw new BizError(
+        BizCode.PARAM_ERROR,
+        `补费明细里「${nameOf(FEE_TYPE_NAME, i.feeType)}」出现了两次，请合并成一行`,
+      );
+    }
+    seenTypes.add(i.feeType);
+  }
+
+  /** 单据金额 = 明细合计（不信任前端传的 total，一律后端自己加） */
+  const amount = detailItems.reduce((s, i) => s + i.amount, 0);
+  const detailText = detailItems
+    .map((i) => `${nameOf(FEE_TYPE_NAME, i.feeType)} ¥${centToYuan(i.amount)}`)
+    .join(' / ');
+
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new BizError(BizCode.PARAM_ERROR, '补费金额必须大于 0');
   }
@@ -1226,7 +1286,6 @@ export async function createSupplementFee(
 
   const deptCode: DeptCode = stu.dept_code || DeptCode.JUNIOR_SENIOR;
   const studentNo = stu.student_no || tempStudentNo(consultStudentId);
-  const feeTypeName = nameOf(FEE_TYPE_NAME, FeeType.SUPPLEMENT);
   const remark = (opts.remark || '').trim() || '试学转正补缴尾款';
 
   /* ---------- 1. 先让财务建单（金额直接传，不让财务按标准取） ---------- */
@@ -1243,7 +1302,8 @@ export async function createSupplementFee(
     amount,
     voucherUrl: opts.voucherUrl,
     voucherNo: opts.voucherNo,
-    remark: `咨询模块补费（${operator.name}）：${remark}`,
+    // ★ 2026-10-27 明细写进财务备注，财务核对时能直接看到这笔钱由哪几项构成
+    remark: `咨询模块补费（${operator.name}）：${remark}｜明细：${detailText}`,
   });
 
   /* ---------- 2. 本地落库 ---------- */
@@ -1267,16 +1327,23 @@ export async function createSupplementFee(
     voucher_by: operator.name,
     pay_method: opts.payMethod || null,
     batch_no: Date.now(),
-    item_detail: JSON.stringify([
-      {
-        feeType: FeeType.SUPPLEMENT,
-        feeTypeName,
-        amount,
-        /** 补费没有「标准价」，应缴就是老师填的数，优惠恒为 0 */
-        standardAmount: amount,
+    /**
+     * ★ 2026-10-27 补费明细逐项落库（用户口径：「补费也要有具体明细」）
+     *
+     * 单据本身仍是一张「补学费」（fee_type=8），item_detail 记的是
+     * 「这次补的钱分别抵了哪些费用项」，详情页会按这张表逐项列出。
+     * 补费没有「标准价」，所以 standardAmount = amount、discount = 0，
+     * 不会触发「优惠必须有名目」的校验。
+     */
+    item_detail: JSON.stringify(
+      detailItems.map((i) => ({
+        feeType: i.feeType,
+        feeTypeName: nameOf(FEE_TYPE_NAME, i.feeType),
+        amount: i.amount,
+        standardAmount: i.amount,
         discount: 0,
-      },
-    ]),
+      })),
+    ),
     create_time: new Date(),
     create_by: operator.name,
     create_by_name: operator.name,
@@ -1287,7 +1354,7 @@ export async function createSupplementFee(
   await addHistory(
     consultStudentId,
     operator.name,
-    `发起补费 ¥${centToYuan(amount)}（${remark}），凭证已随单上传，等待财务确认到账`,
+    `发起补费 ¥${centToYuan(amount)}（${remark}）｜明细：${detailText}；凭证已随单上传，等待财务确认到账`,
     operator.title,
     'SUPPLEMENT',
   );
@@ -1308,7 +1375,7 @@ export async function createSupplementFee(
         byName: operator.name,
         byTitle: operator.title,
         action: 'FEE_SUPPLEMENT',
-        historyText: `发起补费 ¥${centToYuan(amount)}（${remark}），待财务确认到账后转正式在读`,
+        historyText: `发起补费 ¥${centToYuan(amount)}（${remark}）｜明细：${detailText}，待财务确认到账后转正式在读`,
       });
     } catch (e: any) {
       // 状态没推进不影响单据本身：钱和单已经落库，财务核对后到账逻辑还会兜一次
@@ -2091,6 +2158,14 @@ export async function getSupplementPlan(
   >();
   for (const r of rows) {
     if (!r.item_detail) continue;
+    /**
+     * ★ 2026-10-27 补费单不参与缺口计算
+     *
+     * 补费明细里现在会出现「学费 / 餐费」这些项，但补费单本身不计入全款额度
+     * （见 createSupplementFee 的口径）。若把它当合并单登记进去，
+     * 补费一发起就会把学费判成「在途」→ 转正式时缺口凭空少一块。
+     */
+    if (Number(r.fee_type) === FeeType.SUPPLEMENT) continue;
     let detail: Array<{ feeType: number; amount: number }> = [];
     try {
       detail = JSON.parse(r.item_detail);

@@ -1255,3 +1255,41 @@ export const FULL_FEE_TYPES: FeeType[] = [
   FeeType.MEAL,
   FeeType.INSURANCE,
 ];
+
+/* ============================================================
+ * ★ 2026-10-27 学生姓名规则（前后端共用，只有这一份）
+ *
+ * 用户口径：「新建学生姓名必须汉字 2 位以上，可以有·和-，中英文都可以」
+ *
+ *   · 至少 2 个字符（中文 2 字名 / 英文 Joe 都算）；
+ *   · 首字符必须是中文或英文字母 —— 挡住「·张三」「-李四」「  王五」这类脏数据；
+ *   · 其余位置允许中文、英文、空格，以及「·」「•」「-」「—」
+ *     （少数民族姓名「阿卜杜拉·买买提」、复姓/双名「欧阳-娜娜」、英文 "John Smith" 都要能录）；
+ *   · 最长 30 个字符（与库字段长度一致）。
+ * ============================================================ */
+export const STUDENT_NAME_RE = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z·•\-—\s]{1,29}$/;
+
+/** 姓名不合规时的统一提示（前端 ElMessage 与后端 zod 用同一句，避免两边口径不一致） */
+export const STUDENT_NAME_TIP = '学生姓名至少 2 个字符，只能是中文、英文或「·」「-」';
+
+/** 校验学生姓名；合规返回 null，不合规返回提示文案 */
+export function studentNameError(name?: string | null): string | null {
+  const s = String(name ?? '').trim();
+  if (!s) return '请填写学生姓名';
+  if (!STUDENT_NAME_RE.test(s)) return STUDENT_NAME_TIP;
+  return null;
+}
+
+/**
+ * ★ 2026-10-27 补费明细项
+ *
+ * 用户口径：「补费也要有具体明细」—— 补费不再是一笔说不清来源的总额，
+ * 而是按「学费 / 住宿费 / 餐费 / 保险费」逐项填，合计即补费单金额。
+ * 落库仍是一张「补学费」单（fee_type=8），item_detail 里存这份明细。
+ */
+export interface ConsultSupplementItem {
+  /** 费用项类型（FULL_FEE_TYPES 里的项；自定义补费用 SUPPLEMENT） */
+  feeType: FeeType;
+  /** 本次补缴金额（单位：分） */
+  amount: number;
+}

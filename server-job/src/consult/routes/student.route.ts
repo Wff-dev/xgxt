@@ -25,6 +25,9 @@ import {
   ConsultRole,
   // ★ 2026-10-26 来源渠道：市场来源(6) 才需要选招生老师
   LeadChannel,
+  // ★ 2026-10-27 姓名规则（前后端共用同一份正则与提示文案）
+  STUDENT_NAME_RE,
+  STUDENT_NAME_TIP,
   nameOf,
 } from 'shared-types/consult';
 import type { ConsultToFormalResult } from 'shared-types/consult';
@@ -317,6 +320,8 @@ studentRouter.get(
             }));
 
       const firstTypeName = included[0]?.feeTypeName || nameOf(FEE_TYPE_NAME, main.fee_type);
+      /** ★ 2026-10-27 补费单：明细是多费用项，但单据本身是「补学费」，展示时不再拼接成「XX 等 N 项」 */
+      const isSupplementOrder = Number(main.fee_type) === FeeType.SUPPLEMENT;
 
       return {
         orderId: main.id,
@@ -328,8 +333,18 @@ studentRouter.get(
          */
         planId: main.plan_id || undefined,
         stageNo: main.stage_no ?? undefined,
-        feeTypeName:
-          included.length > 1 ? `${firstTypeName} 等 ${included.length} 项` : firstTypeName,
+        /**
+         * ★ 2026-10-27 补费单的 item_detail 现在是「逐项明细」（学费/住宿费/餐费/保险费），
+         *   但业务上它仍是一张「补学费」单 —— 不能因为明细有 4 项就显示成「学费 等 4 项」，
+         *   否则老师会以为重复发起了正式学费。
+         */
+        feeTypeName: isSupplementOrder
+          ? included.length > 1
+            ? `${nameOf(FEE_TYPE_NAME, FeeType.SUPPLEMENT)}（${included.length} 项明细）`
+            : nameOf(FEE_TYPE_NAME, FeeType.SUPPLEMENT)
+          : included.length > 1
+            ? `${firstTypeName} 等 ${included.length} 项`
+            : firstTypeName,
         amount,
         amountYuan: centToYuan(amount),
         status,
@@ -409,7 +424,21 @@ studentRouter.get(
  * ============================================================ */
 
 const addSchema = z.object({
-  studentName: z.string().min(1, '姓名必填').max(50),
+  /**
+   * ★ 2026-10-27 用户口径：「新建学生姓名必须汉字 2 位以上，可以有·和-，中英文都可以」
+   *
+   * 规则见 shared-types 的 STUDENT_NAME_RE（前后端同一份）：
+   *   · 至少 2 个字符（「李雷」「Joe」都行）；
+   *   · 首字符必须是中文或英文字母（挡住「·张三」「-李四」这类脏数据）；
+   *   · 其余允许中文 / 英文 / 空格 /「·」「•」「-」「—」
+   *     （少数民族姓名「阿卜杜拉·买买提」、英文 "John Smith" 才录得进去）。
+   */
+  studentName: z
+    .string({ required_error: '请填写学生姓名', invalid_type_error: '请填写学生姓名' })
+    .trim()
+    .min(1, '请填写学生姓名')
+    .max(30, '学生姓名最多 30 个字符')
+    .regex(STUDENT_NAME_RE, STUDENT_NAME_TIP),
   gender: z.coerce.number().int().min(1).max(2, '性别只能是 1(男) 或 2(女)'),
   /**
    * ★ 2026-10-26 用户口径：「手机号设定为 11 位去重」→ 11 位手机号 + 全库唯一。
