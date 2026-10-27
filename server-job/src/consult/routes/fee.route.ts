@@ -472,6 +472,11 @@ const supplementSchema = z.object({
         feeType: z.coerce.number().int().positive('费用项取值非法'),
         /** 本项补缴金额（单位：分），允许 0（这次先不补这项），但整单不能都是 0 */
         amount: z.coerce.number().int().min(0, '补缴金额不能为负（单位：分）'),
+        /**
+         * ★ 2026-10-27 住宿费按月补：本次补几个月（1~12）
+         *   金额仍以 amount 为准（前端按 450 × 月数算好），months 只用于备注/明细展示。
+         */
+        months: z.coerce.number().int().min(1).max(12).optional(),
       }),
     )
     .optional(),
@@ -505,7 +510,9 @@ feeRouter.post(
     const result = await createSupplementFee(
       body.consultStudentId,
       // 传了明细 → 按明细加总；没传 → 老口径的一笔自定义补费
-      body.items?.length ? body.items.map((i) => ({ feeType: i.feeType as FeeType, amount: i.amount })) : body.amount!,
+      body.items?.length
+        ? body.items.map((i) => ({ feeType: i.feeType as FeeType, amount: i.amount, months: i.months }))
+        : body.amount!,
       { name: operator.userName, title: operator.roleTitle },
       {
         voucherUrl: body.voucherUrl,

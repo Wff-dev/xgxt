@@ -1292,4 +1292,11 @@ export interface ConsultSupplementItem {
   feeType: FeeType;
   /** 本次补缴金额（单位：分） */
   amount: number;
+  /**
+   * ★ 2026-10-27 住宿费按月补：本次补几个月（仅 feeType=ACCOMMODATION 时有意义）
+   *
+   * 住宿费标准价是 6 个月的价（2700 = 450 × 6），补费时老师按「月数」补，
+   * 前端算好 amount 传上来，months 只用于单据备注/明细展示（450 × 3 个月）。
+   */
+  months?: number;
 }

@@ -603,10 +603,21 @@ interface SuppItem {
   feeTypeName: string;
   /** 该项应补（缺口，元） */
   dueYuan: number;
-  /** 本次补缴（元）：默认 = 缺口，可改小 */
+  /** 本次补缴（元）：默认 = 缺口，可改小；住宿费由「月数 × 450」算出来 */
   amountYuan: number;
   /** 没有缺口数据时的兜底行：允许自由填一笔（如全款已到账的追加补收） */
   custom?: boolean;
+  /**
+   * ★ 2026-10-27 用户口径：「补费的话，住宿费是450每月，也要有详细可以修改那种」
+   *
+   * 住宿费不按「缺口总额」改，而是按【月数】补：月单价 × 月数 = 本次补缴。
+   * 只有 feeType = ACCOMMODATION 的行才有这三个字段。
+   */
+  months?: number;
+  /** 月单价（元），取财务标准 ÷ 6，取不到兜底 450 */
+  unitPriceYuan?: number;
+  /** 可补的最大月数 = 缺口 ÷ 月单价（向下取整，保证不超缺口） */
+  maxMonths?: number;
 }
 
 const suppItems = ref<SuppItem[]>([]);
@@ -615,6 +626,51 @@ const suppItems = ref<SuppItem[]>([]);
 const suppTotalYuan = computed(() =>
   suppItems.value.reduce((s, i) => s + (Number(i.amountYuan) || 0), 0),
 );
+
+/** 金额四舍五入到分（避免 450 × 3 这类浮点尾巴） */
+function roundYuan(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * 造一条补费明细行
+ *
+ * ★ 2026-10-27 住宿费按月：缺口 2700（= 450 × 6）在补费里变成「6 个月」，
+ *    老师按实际要补的月数选，金额 = 月单价 × 月数，向上不能超缺口。
+ */
+function makeSuppItem(feeType: number, feeTypeName: string, dueYuan: number): SuppItem {
+  const row: SuppItem = {
+    feeType,
+    feeTypeName,
+    dueYuan,
+    amountYuan: dueYuan,
+  };
+  if (feeType === FeeType.ACCOMMODATION) {
+    const unit = accommodationUnitPrice.value || 450;
+    /**
+     * 可补月数 = 缺口 ÷ 月单价（向下取整）：
+     *   · 缺口 2700 → 6 个月；缺口 1350（补过 3 个月）→ 3 个月；
+     *   · 缺口不足一个月（如 ¥200）→ 不给月数控件，退回普通金额输入，避免默认值超缺口。
+     */
+    const maxMonths = Math.min(12, Math.floor(dueYuan / unit + 1e-6));
+    if (maxMonths >= 1) {
+      row.unitPriceYuan = unit;
+      row.maxMonths = maxMonths;
+      row.months = maxMonths;
+      row.amountYuan = roundYuan(unit * maxMonths);
+    }
+  }
+  return row;
+}
+
+/** 改住宿月数 → 本次补缴金额跟着重算（金额不单独改，避免「改月数 + 改金额」双算） */
+function onSuppMonthsChange(row: SuppItem) {
+  const unit = row.unitPriceYuan || 450;
+  /** 0 个月 = 这次不补住宿费（与其他项「留 0」同一口径） */
+  const months = Math.max(0, Math.min(Number(row.months) || 0, row.maxMonths || 12));
+  row.months = months;
+  row.amountYuan = roundYuan(unit * months);
+}
 
 /**
  * 该学生是否已经补过费
@@ -666,12 +722,7 @@ async function openSupplement(row: ConsultFeeOrder) {
     const missing = new Set<number>(plan.missing || []);
     const rows: SuppItem[] = (plan.items || [])
       .filter((i) => missing.has(i.feeType) && Number(i.amount) > 0)
-      .map((i) => ({
-        feeType: i.feeType,
-        feeTypeName: i.feeTypeName,
-        dueYuan: Number(i.amount) / 100,
-        amountYuan: Number(i.amount) / 100,
-      }));
+      .map((i) => makeSuppItem(i.feeType, i.feeTypeName, Number(i.amount) / 100));
 
     /**
      * 兜底：缺口为 0（全款已到账/在途）时仍允许补一笔，
@@ -732,6 +783,8 @@ async function submitSupplement() {
     .map((i) => ({
       feeType: i.feeType,
       amount: Math.round((Number(i.amountYuan) || 0) * 100),
+      // ★ 2026-10-27 住宿费带月数，单据备注/明细里能看出「450 × 3 个月」
+      ...(i.months != null ? { months: Number(i.months) } : {}),
     }))
     .filter((i) => i.amount > 0);
 
@@ -1502,7 +1555,7 @@ onMounted(load);
     </el-dialog>
 
     <!-- ============ ★ 2026-10-20 补费（试学转正尾款 / 差额补收，金额自定义） ============ -->
-    <el-dialog v-model="suppVisible" title="补费" width="620px">
+    <el-dialog v-model="suppVisible" title="补费" width="720px">
       <el-alert type="success" :closable="false" show-icon class="mb">
         <template #title>
           补费<strong>按费用项逐项填</strong>（默认带出还差多少，可按实收调小）。
@@ -1542,15 +1595,27 @@ onMounted(load);
         <!-- ★ 2026-10-27 补费明细（用户口径：「补费也要有具体明细」） -->
         <el-form-item label="补费明细" required>
           <el-table :data="suppItems" size="small" border style="width: 100%">
-            <el-table-column prop="feeTypeName" label="费用项" min-width="110" />
-            <el-table-column label="应补（缺口）" width="120" align="right">
+            <el-table-column prop="feeTypeName" label="费用项" min-width="90" />
+            <el-table-column label="应补（缺口）" width="175" align="right">
               <template #default="{ row }">
-                {{ row.custom ? '自定义' : `¥${Number(row.dueYuan).toFixed(2)}` }}
+                <template v-if="row.custom">自定义</template>
+                <template v-else>
+                  ¥{{ Number(row.dueYuan).toFixed(2) }}
+                  <!-- ★ 2026-10-27 住宿费按月：缺口旁标出「450 元/月 · 缺口 6 个月」，让老师知道能按月补 -->
+                  <div v-if="row.months != null" class="fee-calc">
+                    {{ fmtYuan(row.unitPriceYuan || 450) }} 元/月 · 缺口 {{ row.maxMonths }} 个月
+                  </div>
+                </template>
               </template>
             </el-table-column>
-            <el-table-column label="本次补缴（元）" width="180">
+            <el-table-column label="本次补缴（元）" width="150">
               <template #default="{ row }">
+                <!-- 住宿费按「月单价 × 月数」算，金额只读；其他项直接填金额 -->
+                <b v-if="row.months != null" class="amount-strong">
+                  ¥{{ Number(row.amountYuan).toFixed(2) }}
+                </b>
                 <el-input-number
+                  v-else
                   v-model="row.amountYuan"
                   :min="0"
                   :max="row.custom ? undefined : row.dueYuan"
@@ -1562,9 +1627,27 @@ onMounted(load);
                 />
               </template>
             </el-table-column>
+            <el-table-column label="住宿月数" width="120" align="center">
+              <template #default="{ row }">
+                <el-input-number
+                  v-if="row.months != null"
+                  v-model="row.months"
+                  :min="0"
+                  :max="row.maxMonths || 12"
+                  :step="1"
+                  :precision="0"
+                  size="small"
+                  controls-position="right"
+                  style="width: 100%"
+                  @change="onSuppMonthsChange(row)"
+                />
+                <span v-else class="fee-calc">—</span>
+              </template>
+            </el-table-column>
           </el-table>
           <div class="stu-sub mt8">
             默认按缺口带出，可按实收金额调小（可少于缺口）；某项留 0 表示这次不补这一项。
+            住宿费按月补：{{ fmtYuan(accommodationUnitPrice) }} 元/月，改「住宿月数」即可，最多补到缺口月数。
           </div>
         </el-form-item>
 

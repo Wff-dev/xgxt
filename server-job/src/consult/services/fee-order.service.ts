@@ -1189,7 +1189,12 @@ export async function createSupplementFee(
     : [{ feeType: FeeType.SUPPLEMENT, amount: Number(amountOrItems) }];
 
   const detailItems = rawItems
-    .map((i) => ({ feeType: Number(i?.feeType), amount: Math.round(Number(i?.amount)) }))
+    .map((i) => ({
+      feeType: Number(i?.feeType),
+      amount: Math.round(Number(i?.amount)),
+      /** ★ 住宿费按月补时带上月数（只用于展示，金额仍以 amount 为准） */
+      months: i?.months == null ? null : Number(i.months),
+    }))
     .filter((i) => Number.isFinite(i.amount) && i.amount > 0);
 
   if (!detailItems.length) {
@@ -1218,7 +1223,12 @@ export async function createSupplementFee(
   /** 单据金额 = 明细合计（不信任前端传的 total，一律后端自己加） */
   const amount = detailItems.reduce((s, i) => s + i.amount, 0);
   const detailText = detailItems
-    .map((i) => `${nameOf(FEE_TYPE_NAME, i.feeType)} ¥${centToYuan(i.amount)}`)
+    .map(
+      (i) =>
+        `${nameOf(FEE_TYPE_NAME, i.feeType)} ¥${centToYuan(i.amount)}${
+          i.months ? `（${i.months} 个月）` : ''
+        }`,
+    )
     .join(' / ');
 
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -1342,6 +1352,8 @@ export async function createSupplementFee(
         amount: i.amount,
         standardAmount: i.amount,
         discount: 0,
+        /** ★ 住宿费按月补的月数（见 ConsultSupplementItem.months） */
+        ...(i.months ? { months: i.months } : {}),
       })),
     ),
     create_time: new Date(),
