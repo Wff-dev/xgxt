@@ -18,6 +18,7 @@
     "fix:consult-state": "node scripts/repair-consult-state.mjs",
     "fix:trial-start": "node scripts/repair-trial-start.mjs",
     "fix:refund-state": "node scripts/repair-refund-state.mjs",
+    "fix:supp-bills": "node scripts/repair-supplement-bills.mjs",
     "db:check": "node scripts/db-check.mjs",
     "db:regen-perm": "node scripts/regen-init-perm.cjs",
     "db:verify-init": "node scripts/verify-init-sql.cjs",

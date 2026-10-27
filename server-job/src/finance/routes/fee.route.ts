@@ -261,6 +261,15 @@ const addSchema = z.object({
         amount: z.coerce.number().int().nonnegative(),
         standardAmount: z.coerce.number().int().nonnegative().optional(),
         discount: z.coerce.number().int().nonnegative().optional(),
+        /**
+         * ★ 2026-10-27 住宿费/餐费的月数（保险费为年数）
+         *
+         * 咨询侧补费是「450 元/月 × N 个月」算出来的，核对入账时要按这个 N
+         * 推到期日；用「金额 ÷ 标准价」反推，标准价一改就算错。
+         */
+        months: z.coerce.number().int().min(0).max(120).optional(),
+        /** ★ 2026-10-27 优惠名目（学费才有，写进该栏备注，财务知道这笔记的是什么） */
+        discountReason: z.string().max(50).optional(),
       }),
     )
     .optional(),

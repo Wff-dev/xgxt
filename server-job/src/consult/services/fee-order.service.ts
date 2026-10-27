@@ -1365,6 +1365,27 @@ export async function createSupplementFee(
     amount,
     voucherUrl: opts.voucherUrl,
     voucherNo: opts.voucherNo,
+    /**
+     * ★ 2026-10-27 补费明细也发给财务（用户口径：「补费的费用分别到每一栏」）
+     *
+     * 补费单本身是「补学费」（fee_type=8），但钱里可能同时有学费/住宿费/餐费/保险费。
+     * 只传合计的话，财务核对入账会记成一条「补学费」，整笔钱全落进
+     * 「学费缴费记录」，住宿费/餐费/保险费三栏永远是 0（用户录屏反馈）。
+     *
+     * 传了明细，财务核对时按分项拆成多条账单：
+     *   · 学费 → 学费栏（没有到期日）
+     *   · 住宿费/餐费/保险费 → 各自那一栏，并按缴费完成日算到期日
+     * 正式收费（同文件上方的 createFeeOrder）早就这么传了，这里补齐。
+     */
+    itemDetail: detailItems.map((i) => ({
+      feeType: i.feeType,
+      feeTypeName: nameOf(FEE_TYPE_NAME, i.feeType),
+      amount: i.amount,
+      standardAmount: i.dueAmount,
+      discount: i.discount,
+      discountReason: i.discountReason || undefined,
+      months: i.months ?? undefined,
+    })),
     // ★ 2026-10-27 明细写进财务备注，财务核对时能直接看到这笔钱由哪几项构成
     remark: `咨询模块补费（${operator.name}）：${remark}｜明细：${detailText}`,
   });

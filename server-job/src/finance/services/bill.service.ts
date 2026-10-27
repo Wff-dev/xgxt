@@ -182,6 +182,16 @@ export interface BillFeeRecordOut {
   voucherAt?: string;
   sourceNo?: string;
   operatorName?: string;
+  /**
+   * ★ 2026-10-27 这一栏自己的备注
+   *
+   * 补费/合并单核对入账时按分项拆账，每条账单的备注只写自己那一项
+   * （「补费分项 2/4｜住宿费 ¥2700.00（6 个月）」），
+   * 这样财务在「住宿费缴费记录」里看到的就是住宿费的事，不会被学费的文案串台。
+   */
+  remark?: string;
+  /** ★ 2026-10-27 有效期到期日（学费没有时间限制，恒为空） */
+  expireDate?: string;
 }
 
 /**
@@ -305,6 +315,9 @@ export async function listBillStudents(
         voucherAt: fee.voucher_time ? toDateStr(fee.voucher_time) : undefined,
         sourceNo: b.source_no ?? undefined,
         operatorName: b.operator_name ?? undefined,
+        // ★ 2026-10-27 每栏自己的备注 + 到期日（学费没有到期日）
+        remark: b.remark ?? undefined,
+        expireDate: exp,
       } as BillFeeRecordOut);
     }
 
