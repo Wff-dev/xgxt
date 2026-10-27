@@ -33,6 +33,8 @@ import { STUDENT_TABLE, addHistory, today } from '../services/student.service';
 import { changeState } from '../services/state.service';
 import { getSupplementPlan, isFullFeeSettled, advanceStudentStateOnArrival, FEE_ORDER_TABLE } from '../services/fee-order.service';
 import { terminateStudentPlans } from '../services/installment.service';
+// ★ 2026-10-27 方案 A：接收建档后把班级补进该学生名下的历史单据（只补空、不覆盖）
+import { syncClassSnapshot } from '../services/class-snapshot.service';
 import { config } from '../config';
 import { REFUND_TABLE } from '../services/refund.service';
 
@@ -534,6 +536,20 @@ consultInternalRouter.post(
         ...(!stu.trial_start ? { trial_start: today() } : {}),
       },
     });
+
+    /**
+     * ★ 2026-10-27（方案 A）：接收建档时把班级补进该学生名下的历史单据
+     *
+     *   与「咨询端分班」同一个补丁，两条入班路径都要覆盖（否则走接收那条
+     *   依然会出现「分班了但缴费单还写未分班」）。
+     *   口径：只补空、不覆盖；失败不影响接收主流程。
+     */
+    try {
+      await syncClassSnapshot(String(stu.id), className);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[consult] 接收建档后补单据班级失败', err);
+    }
 
     res.json(
       ok(

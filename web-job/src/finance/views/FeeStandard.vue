@@ -33,7 +33,7 @@
       <!-- 工具条：左主按钮，右统计 -->
       <div class="table-toolbar">
         <div class="tools">
-          <el-button type="primary" @click="handleAdd">新增标准</el-button>
+          <el-button v-if="canManageStandard" type="primary" @click="handleAdd">新增标准</el-button>
         </div>
         <div class="tools">
           <span class="stat-line">
@@ -92,15 +92,19 @@
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="handleEdit(row)">修改金额</el-button>
-            <el-button
-              link
-              :type="row.isEnabled ? 'warning' : 'success'"
-              size="small"
-              @click="handleToggle(row)"
-            >
-              {{ row.isEnabled ? '停用' : '启用' }}
-            </el-button>
+            <!-- ★ 2026-10-26：与后端 finance:standard:manage 同口径，只勾「查看」则整列只读 -->
+            <template v-if="canManageStandard">
+              <el-button link type="primary" size="small" @click="handleEdit(row)">修改金额</el-button>
+              <el-button
+                link
+                :type="row.isEnabled ? 'warning' : 'success'"
+                size="small"
+                @click="handleToggle(row)"
+              >
+                {{ row.isEnabled ? '停用' : '启用' }}
+              </el-button>
+            </template>
+            <span v-else style="color: var(--el-text-color-placeholder)">—</span>
           </template>
         </el-table-column>
       </el-table>
@@ -184,8 +188,10 @@
 
       </el-tab-pane>
 
-      <!-- ========== 催费设置（2026-10-26 新增） ========== -->
-      <el-tab-pane label="催费设置" name="urge">
+      <!-- ========== 催费设置（2026-10-26 新增） ==========
+           ★ 权限：没勾「查看催费名单」的职位看不到这个页签；
+                   没勾「保存催费设置」只能看，不能改天数。 -->
+      <el-tab-pane v-if="canViewUrge" label="催费设置" name="urge">
         <el-card shadow="never" class="urge-card">
           <el-alert type="info" :closable="false" show-icon>
             <template #title>催费提醒规则</template>
@@ -203,12 +209,21 @@
               :min="0"
               :max="365"
               :step="1"
+              :disabled="!canManageUrge"
               controls-position="right"
               style="width: 130px"
             />
             <span class="uf-unit">天提醒</span>
-            <el-button type="primary" :loading="urgeSaving" @click="saveUrgeAhead">保存</el-button>
-            <span class="uf-tip">到期日距今 ≤ 该天数时进入催费名单；已逾期的一直留在名单里</span>
+            <el-button
+              v-if="canManageUrge"
+              type="primary"
+              :loading="urgeSaving"
+              @click="saveUrgeAhead"
+            >保存</el-button>
+            <span class="uf-tip">
+              到期日距今 ≤ 该天数时进入催费名单；已逾期的一直留在名单里。
+              <template v-if="!canManageUrge">（当前职位只能查看，修改需「保存催费设置」权限）</template>
+            </span>
           </div>
 
           <div class="urge-preview">
@@ -286,6 +301,18 @@ import {
   type UrgeExpireRow,
 } from '@/finance/api/finance';
 import { formatAmount, dash } from '@/finance/utils/finance';
+/* ★ 2026-10-26：与后端 finance:standard:manage 同口径 —— 只勾「查看」的职位不能改标准
+ * ★ 2026-10-26：催费设置页签使用**自己的**两个码，与权限树
+ *   `财务管理/费用标准/查看催费名单 · 保存催费设置` 一一对应
+ *   （后端 GET /api/finance/urge/* 判 finance:urge:view，POST 判 finance:urge:manage） */
+import { hasPerm } from '@/store/permission';
+
+/** 有没有「费用标准维护」操作权 */
+const canManageStandard = computed(() => hasPerm('finance:standard:manage'));
+/** 能不能看到「催费设置」页签（催费名单是敏感数据，按权限收） */
+const canViewUrge = computed(() => hasPerm('finance:urge:view'));
+/** 能不能改催费提前天数 */
+const canManageUrge = computed(() => hasPerm('finance:urge:manage'));
 
 /* ---------- 列表 ---------- */
 
@@ -481,6 +508,11 @@ const activeTab = ref('standard');
 
 watch(activeTab, (v) => {
   if (v === 'urge') {
+    // ★ 没权限却把页签切成 urge（权限后加载 / 手改组件状态）→ 退回费用标准
+    if (!canViewUrge.value) {
+      activeTab.value = 'standard';
+      return;
+    }
     loadUrgeAhead();
     loadUrgeRows();
   }
@@ -520,8 +552,8 @@ async function saveUrgeAhead() {
     ElMessage.success(`已保存：到期前 ${urgeAheadDays.value} 天开始催费`);
     await loadUrgeRows();
   } catch (e) {
+    // 失败提示由 request.ts 统一弹（含 403「没有该操作的权限」），这里不再重复弹
     console.error('保存催费天数失败', e);
-    ElMessage.error('保存失败');
   } finally {
     urgeSaving.value = false;
   }

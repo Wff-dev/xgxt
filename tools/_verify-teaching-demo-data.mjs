@@ -28,7 +28,7 @@ const PAGES = [
   ['exam', '/teaching/exam', '考试管理'],
   ['score', '/teaching/score', '成绩管理'],
   ['dorm', '/teaching/dorm', '宿舍管理'],
-  ['fee', '/teaching/fee', '催费'],
+  ['fee', '/teaching/fee', '缴费'],
   ['refund', '/teaching/refund', '退费'],
   ['approval', '/teaching/approval', '休学 / 退学审批'],
 ];

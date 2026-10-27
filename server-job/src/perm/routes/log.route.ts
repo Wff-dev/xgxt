@@ -23,6 +23,7 @@ import { wrap } from '../utils/wrap';
 import { validate } from '../middleware/validate';
 import { BizError } from '../middleware/errorHandler';
 import { resolveLogRoleLabels } from '../services/perm.service';
+import { sanitizeTargetObj } from '../utils/logTarget';
 
 export const logRouter = Router();
 
@@ -46,7 +47,9 @@ function toLogItem(r: any, roleLabel?: string) {
     operatorRole: roleLabel ?? r.operator_role,
     moduleName: r.module_name,
     actionType: r.action_type,
-    targetObj: r.target_obj,
+    /* ★ 2026-10-26：历史数据里残留的 `资源 #<UUID>` 在这里统一洗掉，
+     *   列表 / 详情 / 导出都不要再把机器 ID 吐到界面上（口径见 utils/logTarget.ts） */
+    targetObj: sanitizeTargetObj(r.target_obj),
     beforeValue: r.before_value,
     afterValue: r.after_value,
     ip: r.ip,
@@ -78,11 +81,10 @@ function applyFilters(q: any) {
     query.andWhere((qb: any) => {
       qb.where('operator_name', 'like', `%${q.keyword}%`)
         .orWhere('target_obj', 'like', `%${q.keyword}%`)
-        .orWhere('ip', 'like', `%${q.keyword}%`)
-        // ★ 2026-10-22：全系统留痕后，同一模块里的操作长得都很像，
-        //   按接口路径搜是排障最快的方式（例如搜 refund/approve）
-        .orWhere('api_path', 'like', `%${q.keyword}%`)
         .orWhere('operator_role', 'like', `%${q.keyword}%`);
+      // ★ 2026-10-26：按用户要求，界面上不再展示「IP 地址」与「访问接口」，
+      //   所以关键词搜索也同步去掉 ip / api_path 两个匹配维度 ——
+      //   否则用户按 IP 搜到结果，明细里却看不到 IP，只会徒增困惑。
     });
   }
   if (q.moduleName) query.andWhere('module_name', q.moduleName);

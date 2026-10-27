@@ -57,8 +57,16 @@
  *                     stageTotal:
  *                       type: integer
  *                       example: 5
+ *                     logTotal:
+ *                       type: integer
+ *                       description: 全表操作日志总条数（与日志页 KPI「日志总数」同一口径）
+ *                       example: 1967
  *                     recentLogs:
  *                       type: array
+ *                       description: |
+ *                         最近操作动态 —— 按天取样，不是「全表最新 N 条」：
+ *                         最近一个有日志的日子取 6 条，再往前每天取 2 条，最多 4 天共 12 条。
+ *                         这样日志量大时也不会出现「清一色同一天」的观感。
  *                       items:
  *                         $ref: '#/components/schemas/Log'
  *       401:

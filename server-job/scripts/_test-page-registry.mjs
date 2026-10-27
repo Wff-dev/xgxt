@@ -5,14 +5,14 @@
  * 背景（2026-10-20）：
  *   用户要求「按之前的样式，但内容按左侧菜单栏改写」——
  *   系统这轮把 就业管理 / 教务管理 / 班级管理（大学部）/ 教学管理（初高）
- *   四个板块合并成**一个「教学管理」**（侧栏只剩一个分组，15 项），
+ *   四个板块合并成**一个「教学管理」**（侧栏只剩一个分组，当前 13 项），
  *   并把「工作台」提为置顶单层菜单项。
  *   台账原来还是「7 板块 56 页」的老口径，跟菜单对不上。
  *
  * 【本脚本钉住的五条】
  *   ① 板块口径 = 5 个（工作台 / 市场咨询 / 财务管理 / 权限管理 / 教学管理），
  *      顺序与侧栏一致；旧的 job / edu / class / class-jh 四个 key 不再出现。
- *   ② 教学管理的 15 个页面，**顺序与 path 必须与 config/menu.ts 逐项相同**
+ *   ② 教学管理的 13 个页面，**顺序与 path 必须与 config/menu.ts 逐项相同**
  *      —— 这一条是核心，菜单改了台账没改就会红。
  *   ③ 合并页必须挂多个权限码（pageCodes），单码页也要能通过 pageCodesOf 取到。
  *   ④ 四个消费点都走统一取码函数，不许再出现「只认第一个码」的裸判断
@@ -94,7 +94,7 @@ const EXPECT_BOARDS = [
   ['consult', '市场咨询', 5],
   ['finance', '财务管理', 6],
   ['perm', '权限管理', 7],
-  ['teach', '教学管理', 15],
+  ['teach', '教学管理', 13],
 ];
 
 check('板块数 = 5（原 7 板块已合并）', boards.length === 5, `实际 ${boards.length}`);
@@ -120,10 +120,10 @@ check(
 );
 
 const total = boards.reduce((n, b) => n + b.pageKeys.length, 0);
-check('页面总数 = 34（1+5+6+7+15）', total === 34, `实际 ${total}`);
+check('页面总数 = 32（1+5+6+7+13）', total === 32, `实际 ${total}`);
 
 /* ============================================================
- * ② 教学管理 15 页 = 菜单 15 项（顺序 + path 逐项比对）
+ * ② 教学管理 13 页 = 菜单 13 项（顺序 + path 逐项比对）
  * ============================================================ */
 
 const teach = boards.find((b) => b.moduleKey === 'teach');
@@ -146,9 +146,9 @@ while ((mt = tokenRe.exec(childrenText)) !== null) {
   else if (mt[2]) menuPaths.push(mt[2]);
 }
 
-check('从 menu.ts 解析出 15 个菜单项', menuPaths.length === 15, `实际 ${menuPaths.length}`);
+check('从 menu.ts 解析出 13 个菜单项', menuPaths.length === 13, `实际 ${menuPaths.length}`);
 check(
-  '教学管理台账的 15 个 path 与菜单逐项相同（顺序也算）',
+  '教学管理台账的 13 个 path 与菜单逐项相同（顺序也算）',
   teach && JSON.stringify(teach.paths) === JSON.stringify(menuPaths),
   teach && teach.paths.length === menuPaths.length
     ? teach.paths
@@ -164,8 +164,8 @@ check(
 
 check('教学管理里有合并页（pageCodes 数组）', (teach?.multiCodes || 0) >= 8, `多码页 ${teach?.multiCodes} 个`);
 check(
-  '教学管理每页都至少有一个权限码（单码 + 多码 = 15 页）',
-  !!teach && teach.singleCodes + teach.multiCodes === 15,
+  '教学管理每页都至少有一个权限码（单码 + 多码 = 13 页）',
+  !!teach && teach.singleCodes + teach.multiCodes === 13,
   `单码 ${teach?.singleCodes} + 多码 ${teach?.multiCodes}`,
 );
 check('注册表导出统一取码函数 pageCodesOf', /export function pageCodesOf\(/.test(regSrc));
@@ -192,12 +192,13 @@ check('职位模式接口把 pageCodes 一并下发', /pageCodes:\s*p\.pageCodes
 check('共享类型 PermPageItem 声明了 pageCodes', /pageCodes\?:\s*string\[\]/.test(types));
 
 check(
-  '默认值推导：任一码命中即可见（不是只认首码）',
-  /visible = pageCodesOf\(p\)\.some\(\(c\) => legacySet\.has\(c\)\)/.test(defaults),
+  '默认值推导：直接按权限库功能点名匹配页面名（任一动作即视为可见）',
+  /const granted = new Set\(moduleItems\?\.\[board\.moduleKey\] \|\| \[\]\)/.test(defaults) &&
+    /if \(granted\.has\(page\.name\)\) out\.add\(/.test(defaults),
 );
 check(
-  '默认值推导里不再有「只认 pageCode」的裸判断',
-  !/legacySet\.has\(p\.pageCode\)/.test(defaults),
+  '默认值推导里不再有「只认页面权限码」的裸判断',
+  !/legacySet\.has\(p\.pageCode\)/.test(defaults) && !defaults.includes('legacySet'),
 );
 check('台账取码新增多码版本 codesOfPath', /export function codesOfPath\(pagePath: string\): string\[\]/.test(ledger));
 check(
@@ -220,8 +221,8 @@ const wbText = bodySrc.slice(
 );
 check('工作台页面 locked（不可取消，否则把人锁在门外）', /locked:\s*true/.test(wbText));
 check(
-  '职位模式默认值显式给了 workbench = true（否则界面显示「工作台 0/1」）',
-  /case 'workbench':[\s\S]{0,600}?visible = true;/.test(defaults),
+  '工作台默认恒可见（不依赖权限库勾选，否则界面显示「工作台 0/1」）',
+  /if \(board\.moduleKey === 'workbench'\) \{[\s\S]{0,220}?out\.add\(/.test(defaults),
 );
 
 /* ============================================================

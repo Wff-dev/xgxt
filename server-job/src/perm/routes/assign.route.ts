@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { BizCode, PermModule, RolePermMap } from 'shared-types/perm';
 import { ok } from '../utils/response';
 import { db } from '../utils/db';
+import { orderRoles } from '../../utils/roleOrder';
 import { wrap } from '../utils/wrap';
 import { validate } from '../middleware/validate';
 import { checkPermission } from '../middleware/auth';
@@ -91,7 +92,7 @@ const permKey = (moduleKey: string, itemName: string) => `${moduleKey}||${itemNa
 assignRouter.get(
   '/role-list',
   wrap(async (_req, res) => {
-    const rows = await db('t_perm_role').where('is_deleted', false).orderBy('sort_no');
+    const rows = await orderRoles(db('t_perm_role').where('is_deleted', false));
     const depts = await db('t_perm_dept').where('is_deleted', false).select('id', 'dept_name');
     const deptMap = new Map(depts.map((d: any) => [d.id, d.dept_name]));
 

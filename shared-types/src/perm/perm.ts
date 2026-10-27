@@ -660,7 +660,21 @@ export interface PermOverview {
   deptTotal: number;
   /** 下设学段数（3） */
   stageTotal: number;
-  /** 最近操作动态 */
+  /**
+   * 全表日志总条数
+   *
+   * ⚠️ 2026-10-26 起「权限总览」的最近操作动态已改为**只含当天**的日志列表
+   *   （前端复用组件 LogTable 传 today-only，走 /api/perm/log/list
+   *    并自带 startDate/endDate = 今天，分页与「共 N 条」都是今日口径），
+   *   不再消费本字段。保留是为了接口兼容与既有回归脚本。
+   */
+  logTotal: number;
+  /**
+   * 最近操作动态（后端按天取样：最近一天 6 条 + 更早每天 2 条，最多 12 条）
+   *
+   * ⚠️ 同上：总览前端已改用「当天完整列表」，本字段仅作接口兼容保留。
+   *    口径见 routes/overview.route.ts 的 fetchRecentLogs()。
+   */
   recentLogs: PermLog[];
 }
 

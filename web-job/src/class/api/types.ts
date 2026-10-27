@@ -476,6 +476,14 @@ export interface BedListResult {
 export interface ConsultItem {
   id: string;
   consultNo: string;
+  /**
+   * ★ 2026-10-27 「咨询单号」列显示的值 = 咨询侧**收款单号**（SK20261026-004）。
+   *   consultNo 是幂等键（学号或咨询学生 id），不能拿来展示。
+   *   为空表示该生没有咨询收款单（如换班转入 / 初高升学这类内部流转）。
+   */
+  consultNoText?: string;
+  /** 该生全部收款单号（顿号分隔），用作悬浮提示；多笔缴费时能看到完整流水 */
+  consultNoTip?: string;
   studentName: string;
   gender: number;
   genderName: string;
@@ -532,6 +540,8 @@ export interface ConsultReceivePayload {
   dormId?: string | null;
   dormNo?: string | null;
   bedNo?: number | null;
+  /** 床位 id（与 dormId 同源，便于后端直接写床位占用） */
+  bedId?: string | null;
   remark?: string | null;
   /** 末班 / 重修转入：为 true 时封班班级也可接收，且不新建学生档案 */
   repeatIn?: boolean;

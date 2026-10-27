@@ -228,7 +228,7 @@ const definition: swaggerJsdoc.Options['definition'] = {
           roleStatus: { type: 'string', enum: ['启用', '停用'], example: '启用' },
           deptId: { type: 'string', nullable: true, example: 'D01' },
           deptName: { type: 'string', nullable: true, example: '教学部' },
-          isSys: { type: 'boolean', example: true, description: '系统预置职位：不可删、编码不可改' },
+          isSys: { type: 'boolean', example: true, description: '内部标记：是否由种子数据预置（2026-10-26 起不再影响删除与改编码）' },
           permCount: { type: 'integer', example: 185 },
           userCount: { type: 'integer', example: 2 },
           sortNo: { type: 'integer', example: 1 },

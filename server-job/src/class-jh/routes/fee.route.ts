@@ -219,7 +219,7 @@ function withinUrgeWindow(row: { remainDays: number | null }, windowDays: number
  *   （「学生档案没有的，其他模块也不能有」）。这类单据的姓名/班级
  *   会保留开单快照，不会突然变成空白。
  */
-async function fetchStudentContacts(studentIds: Array<string | null | undefined>) {
+async function fetchStudentContacts(rowsIn: Array<{ studentId?: string | null; studentNo?: string | null }>) {
   const map: Record<
     string,
     {
@@ -233,20 +233,28 @@ async function fetchStudentContacts(studentIds: Array<string | null | undefined>
       headTeacherName: string | null;
     }
   > = {};
-  const ids = [...new Set(studentIds.filter((x): x is string => !!x))];
-  for (let i = 0; i < ids.length; i += 500) {
-    /**
-     * ★ 2026-10-26 关键修复：按 **source_id 或 id** 两种键都能命中
-     *
-     * 催费名单的 studentId 来自财务账单 = **咨询学生 id** = 统一表的 `source_id`；
-     * 原来只 `whereIn('id')`（统一表主键），两者不相等 →
-     * 一个都查不到 → 姓名/学号/班级/手机号全部回落到账单快照（或显示「—」）。
-     */
-    const chunk = ids.slice(i, i + 500);
+  /**
+   * ★ 2026-10-26 三键匹配：`source_id / id / student_no` 任一命中
+   *
+   * 催费名单的 studentId 来自**财务账单**（演示/财务侧是 `FSB-J26001` 这类财务自有 id），
+   * 教学侧统一表里学生主键是 `seed-stu-01`、source_id 可能为空、只有 **学号**
+   * （`S20260001`）两边对得上。只按 id/source_id 匹配 → 手机号、家长手机号全空，
+   * 列表里一片「—」。
+   */
+  const keys = [
+    ...new Set(
+      [
+        ...rowsIn.map((r) => r.studentId).filter((x): x is string => !!x),
+        ...rowsIn.map((r) => r.studentNo).filter((x): x is string => !!x),
+      ].map((x) => String(x)),
+    ),
+  ];
+  for (let i = 0; i < keys.length; i += 500) {
+    const chunk = keys.slice(i, i + 500);
     const rows = await tbl(db, DB, STUDENT_TABLE, STAGE)
       .where('is_deleted', false)
       .where((b: any) => {
-        b.whereIn('source_id', chunk).orWhereIn('id', chunk);
+        b.whereIn('source_id', chunk).orWhereIn('id', chunk).orWhereIn('student_no', chunk);
       })
       .select('id', 'source_id', 'phone', 'parent_phone', 'student_no', 'student_name', 'class_id', 'class_name', 'dept_code');
     for (const r of rows as any[]) {
@@ -260,9 +268,10 @@ async function fetchStudentContacts(studentIds: Array<string | null | undefined>
         parentPhone: r.parent_phone || null,
         headTeacherName: r.head_teacher_name || null,
       };
-      // 两种键都建索引，调用方传哪个都能命中
+      // 三种键都建索引，调用方传哪个都能命中
       map[r.id] = keyMap;
       if (r.source_id) map[r.source_id] = keyMap;
+      if (r.student_no) map[r.student_no] = keyMap;
     }
   }
   return map;
@@ -279,7 +288,8 @@ function mergeArchive<T extends Record<string, any>>(
   archive: Awaited<ReturnType<typeof fetchStudentContacts>>,
 ): T[] {
   return list.map((x) => {
-    const s = archive[x.studentId];
+    // ★ 2026-10-26：财务侧 studentId（FSB-xxx）和教学侧学号是两套 id，两个键都试
+    const s = archive[x.studentId] ?? (x.studentNo ? archive[x.studentNo] : undefined);
     if (!s) return x;
     return {
       ...x,
@@ -369,22 +379,35 @@ feeRouter.get(
     });
 
     // ---- 匹配台账行（同学生 + 同费用类型，取缴费日期最新的一条）----
+    /**
+     * ★ 2026-10-26 双键匹配：财务侧 studentId（`FSB-xxx`）和教学台账的
+     *   student_id（学费号 `S20260001`）不是一套 id。只按 studentId 查 →
+     *   一条都命中不了 → 列表 `feeId` 全空 → 点「上传缴费凭证」后端报「缴费单不存在」。
+     *   所以 student_id / student_no 都查、都建索引，取到哪条算哪条。
+     */
     const stuIdsAll = [...new Set(fin.rows.map((r) => r.studentId))].filter(Boolean);
+    const stuNosAll = [...new Set(fin.rows.map((r) => r.studentNo))].filter(Boolean);
     let ledMap = new Map<string, any>();
-    if (stuIdsAll.length) {
+    if (stuIdsAll.length || stuNosAll.length) {
       const ledRows = await tbl(db, DB, FEE_TABLE, STAGE)
         .where('is_deleted', false)
-        .whereIn('student_id', stuIdsAll)
+        .where((b: any) => {
+          b.whereIn('student_id', stuIdsAll.length ? stuIdsAll : [''])
+            .orWhereIn('student_no', stuNosAll.length ? stuNosAll : ['']);
+        })
         .select('*');
       for (const l of ledRows as any[]) {
-        const k = `${l.student_id}::${l.fee_type}`;
-        const prev = ledMap.get(k);
-        if (!prev || String(l.pay_date || '') > String(prev.pay_date || '')) ledMap.set(k, l);
+        const keys = [`${l.student_id}::${l.fee_type}`, `${l.student_no}::${l.fee_type}`];
+        for (const k of keys) {
+          const prev = ledMap.get(k);
+          if (!prev || String(l.pay_date || '') > String(prev.pay_date || '')) ledMap.set(k, l);
+        }
       }
     }
 
     let list: any[] = fin.rows.map((r) => {
-      const l = ledMap.get(`${r.studentId}::${r.feeType}`);
+      const l =
+        ledMap.get(`${r.studentId}::${r.feeType}`) ?? ledMap.get(`${r.studentNo}::${r.feeType}`);
       // 展示状态：已过到期日 = 逾期，否则待缴（名单里的人都是「该交钱了」）
       const payStatus = r.remainDays < 0 ? PayStatus.OVERDUE : PayStatus.UNPAID;
       return {
@@ -445,7 +468,9 @@ feeRouter.get(
     const withCount = paged.map((x: any) => ({ ...x, urgeCount: urgeCountMap[x.studentId] || 0 }));
 
     // ★ 档案补全（手机号 / 学号 / 班级以档案为准）
-    const contacts = await fetchStudentContacts(withCount.map((x: any) => x.studentId));
+    const contacts = await fetchStudentContacts(
+      withCount.map((x: any) => ({ studentId: x.studentId, studentNo: x.studentNo })),
+    );
     const withContact = mergeArchive(withCount, contacts);
 
     // 窗口天数带回前端（现在指财务催费的提前天数）
@@ -500,7 +525,9 @@ feeRouter.get(
     if (q.isUrgent !== undefined) list = list.filter((x: any) => x.isUrgent === q.isUrgent);
 
     // ★ 档案信息（2026-10-20）：导出与列表同口径，按 500 分片批量取档案
-    const contacts = await fetchStudentContacts(list.map((x: any) => x.studentId));
+    const contacts = await fetchStudentContacts(
+      list.map((x: any) => ({ studentId: x.studentId, studentNo: x.studentNo })),
+    );
     const withContact = mergeArchive(list, contacts);
 
     res.json(ok(withContact));

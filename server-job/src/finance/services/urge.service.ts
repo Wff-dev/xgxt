@@ -23,13 +23,14 @@
 import { db } from '../utils/db';
 import { FeeType, FEE_TYPE_NAME } from 'shared-types/finance';
 import { toDateStr } from './fee.service';
+import { computeExpireDate, EXPIRE_FEE_TYPES } from './expire';
 
 /** 财务配置表（KV） */
 const SETTING_TABLE = 't_finance_setting';
 const BILL_TABLE = 't_finance_bill';
 
 /** 参与催费提醒的费用类型：餐费 / 住宿费 / 保险费 */
-export const URGE_FEE_TYPES: number[] = [FeeType.MEAL, FeeType.ACCOMMODATION, FeeType.INSURANCE];
+export const URGE_FEE_TYPES: number[] = EXPIRE_FEE_TYPES;
 
 /** 默认提前天数 */
 export const DEFAULT_AHEAD_DAYS = 15;
@@ -97,6 +98,142 @@ export interface UrgeRow {
 }
 
 /**
+ * ★ 2026-10-26 回填历史账单的到期日
+ *
+ * 【为什么需要】到期日原本只在「财务核对入账」那一刻算一次
+ *   （`fee.service.verifyFee` → `calcExpireDate`）。这套逻辑是 2026-10-26 才上的，
+ *   在此之前核对的账单 `expire_date` 全是 NULL；催费名单 `whereNotNull('expire_date')`
+ *   一过滤 → **一条都不剩 → 页面整片「暂无数据」**（用户实测反馈的就是这个）。
+ *
+ * 【规则】与核对入账完全一致（`services/expire.ts`）：
+ *   按 学生×费用类型 把空到期日的账单按缴费日升序排队，
+ *   逐笔 `到期日 = max(上笔到期日, 本笔缴费日) + 缴费金额÷标准价 个月`。
+ *
+ * 【缺标准就跳过，不瞎算】标准价 <= 0（比如就业部还没配住宿费标准）时留空，
+ *   并把 (费用类型, 部门) 记进 `missing`，由调用方决定怎么提示。
+ *
+ * 【幂等】只处理 `expire_date IS NULL` 的行，重复跑不会改已有值。
+ */
+export async function backfillExpireDates(): Promise<{
+  filled: number;
+  skipped: number;
+  missing: Array<{ feeType: number; deptCode: number }>;
+}> {
+  const empty = (await db(BILL_TABLE)
+    .where({ is_deleted: false, bill_type: 1 })
+    .whereIn('fee_type', URGE_FEE_TYPES)
+    .whereNull('expire_date')
+    .select('id', 'student_id', 'fee_type', 'dept_code', 'amount', 'bill_date')
+    .orderBy([
+      { column: 'student_id', order: 'asc' },
+      { column: 'fee_type', order: 'asc' },
+      { column: 'bill_date', order: 'asc' },
+    ])) as any[];
+
+  const missing: Array<{ feeType: number; deptCode: number }> = [];
+  if (!empty.length) return { filled: 0, skipped: 0, missing };
+
+  // 标准价：只认「未删除 + 已启用」（与 getStandard 的校验口径一致）
+  const stdRows = (await db('t_finance_fee_standard')
+    .where({ is_deleted: false, is_enabled: true })
+    .whereIn('fee_type', URGE_FEE_TYPES)
+    .select('fee_type', 'dept_code', 'amount')) as any[];
+  const stdMap = new Map<string, number>();
+  for (const s of stdRows) {
+    stdMap.set(`${Number(s.fee_type)}-${Number(s.dept_code)}`, Number(s.amount) || 0);
+  }
+
+  // 已到期账单里「该生该费用」的最晚到期日 —— 续费从这里接
+  const prevRows = (await db(BILL_TABLE)
+    .where({ is_deleted: false, bill_type: 1 })
+    .whereIn('fee_type', URGE_FEE_TYPES)
+    .whereNotNull('expire_date')
+    .groupBy('student_id', 'fee_type')
+    .select('student_id', 'fee_type')
+    .max({ d: 'expire_date' })) as any[];
+  const prevMap = new Map<string, string>();
+  for (const p of prevRows) {
+    const d = toDateStr(p.d);
+    if (d) prevMap.set(`${p.student_id}::${p.fee_type}`, d);
+  }
+
+  const today = toDateStr(new Date())!;
+  let filled = 0;
+  let skipped = 0;
+  const missingKeys = new Set<string>();
+
+  for (const r of empty) {
+    const feeType = Number(r.fee_type);
+    const deptCode = Number(r.dept_code ?? 1);
+    const std = stdMap.get(`${feeType}-${deptCode}`) ?? 0;
+    const payDate = toDateStr(r.bill_date) || today;
+    const key = `${r.student_id}::${feeType}`;
+
+    const exp = computeExpireDate({
+      feeType,
+      amount: Number(r.amount) || 0,
+      payDate,
+      stdAmount: std,
+      prevExpire: prevMap.get(key),
+    });
+
+    if (!exp) {
+      skipped++;
+      const mk = `${feeType}-${deptCode}`;
+      if (!missingKeys.has(mk)) {
+        missingKeys.add(mk);
+        missing.push({ feeType, deptCode });
+      }
+      continue;
+    }
+
+    await db(BILL_TABLE).where({ id: r.id }).update({ expire_date: exp });
+    prevMap.set(key, exp);
+    filled++;
+  }
+
+  if (filled || skipped) {
+    console.log(
+      `[urge] 回填账单到期日：补齐 ${filled} 条，跳过 ${skipped} 条` +
+        (missing.length
+          ? `（缺费用标准：${missing
+              .map((m) => `${FEE_TYPE_NAME[m.feeType] || m.feeType}/部门${m.deptCode}`)
+              .join('、')}）`
+          : ''),
+    );
+  }
+  return { filled, skipped, missing };
+}
+
+/**
+ * 读侧兜底：进入催费名单前先确保历史账单都有到期日
+ *
+ * 节流 60 秒（催费页三个部门 + 徽标各调一次列表，不能每次都全表扫）。
+ * 失败绝不影响列表本身 —— 它只是「让老数据也能出现在名单里」的补偿手段。
+ */
+let lastEnsureAt = 0;
+let ensurePromise: Promise<void> | null = null;
+const ENSURE_INTERVAL_MS = 60_000;
+
+export async function ensureExpireDates(): Promise<void> {
+  // 并发请求（页面 + 徽标同时进来）共享同一次回填，避免第二个请求读到「还没补完」的空名单
+  if (ensurePromise) return ensurePromise;
+  if (Date.now() - lastEnsureAt < ENSURE_INTERVAL_MS) return;
+
+  ensurePromise = (async () => {
+    try {
+      await backfillExpireDates();
+    } catch (e: any) {
+      console.warn('[urge] 回填到期日失败（不影响名单查询）：', e?.message || e);
+    } finally {
+      lastEnsureAt = Date.now();
+      ensurePromise = null;
+    }
+  })();
+  return ensurePromise;
+}
+
+/**
  * 催费名单：按账单到期日筛出「快到期 / 已逾期」的学生
  *
  * @param aheadDays 提前天数（默认取配置）
@@ -106,6 +243,9 @@ export async function listUrgeByExpire(
   aheadDays: number,
   q: { className?: string; keyword?: string; feeType?: number; deptCode?: number } = {},
 ): Promise<{ rows: UrgeRow[]; total: number; aheadDays: number }> {
+  // ★ 历史账单（核对时还没有到期日逻辑的那批）先补上，否则名单永远是空的
+  await ensureExpireDates();
+
   const base = db(BILL_TABLE)
     .where({ bill_type: 1, is_deleted: false })
     .whereIn('fee_type', URGE_FEE_TYPES)

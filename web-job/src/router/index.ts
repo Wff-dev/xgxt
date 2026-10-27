@@ -324,7 +324,7 @@ const routes: RouteRecordRaw[] = [
     path: '/class-jh/fee',
     name: 'ClassJhFee',
     component: () => import('@/class-jh/views/FeeList.vue'),
-    meta: { title: '催费管理', pageCode: 'classjh:fee:view' },
+    meta: { title: '缴费管理', pageCode: 'classjh:fee:view' },
   },{
     path: '/class-jh/setting',
     name: 'ClassJhSetting',

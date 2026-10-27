@@ -65,7 +65,11 @@ const SVC = P('server-job/src/perm/services/perm.service.ts');
 const LOG = P('server-job/src/perm/routes/log.route.ts');
 const OVW = P('server-job/src/perm/routes/overview.route.ts');
 const EXP = P('server-job/src/perm/routes/export.route.ts');
-const VIEW = P('web-job/src/perm/views/LogQuery.vue');
+/* ★ 2026-10-26：日志列表的渲染实现已从 LogQuery.vue 抽到 components/LogTable.vue
+ *   （总览页「最近操作动态」与操作日志页共用同一组件）。
+ *   下面所有「前端必须 .tag.b 胶囊」的断言改成检查组件本体 ——
+ *   组件是两个页面唯一的渲染来源，检查它就等于同时覆盖两处。 */
+const VIEW = P('web-job/src/perm/components/LogTable.vue');
 const CSS = P('web-job/src/shared-ui/shared-ui.css');
 
 const svc = stripComments(read(SVC));
@@ -135,9 +139,15 @@ if (!token) {
   check('列表：没有任何一行显示英文编码', bad.length === 0,
     bad.slice(0, 3).map((x) => `${x.operatorName}:${x.operatorRole}`).join(', ') || '0 条');
 
-  const empty = all.filter((x) => !x.operatorRole);
+  /* ★ 2026-10-26：`admin` 这类账号在门户/权限库里根本不存在
+   *   （是外部拿常见用户名撞库留下的失败登录记录），按操作人补不出职位是**正确**的，
+   *   不能算「所属职位为空」的缺陷。系统自动写入的服务账号同理。 */
+  const NO_ROLE_ACTORS = new Set(['admin', '系统自动', 'system']);
+  const empty = all.filter((x) => !x.operatorRole && !NO_ROLE_ACTORS.has(x.operatorName));
   check('列表：所属职位不再为空（老日志也能按操作人补出来）', empty.length === 0,
-    empty.length ? `${empty.length} 条为空，例：${empty[0].operatorName}` : '0 条');
+    empty.length
+      ? `${empty.length} 条为空，例：${empty[0].operatorName}`
+      : '0 条（已排除系统内不存在的账号）');
 
   // 与「账号管理」同一口径：「林晓」在两个页面都应是「系统管理员」
   const linx = all.find((x) => x.operatorName === '林晓');

@@ -103,8 +103,18 @@
     </div>
 
     <el-table v-loading="loadingTable" :data="tableRows" size="small" border style="margin-top: 12px">
-      <el-table-column prop="consultNo" label="咨询单号" width="150">
-        <template #default="{ row }"><span class="mono">{{ row.consultNo }}</span></template>
+      <!-- ★ 2026-10-27：显示咨询侧收款单号（SK…）；consultNo 是幂等键，不作为展示 -->
+      <el-table-column label="咨询单号" width="160">
+        <template #default="{ row }">
+          <el-tooltip
+            v-if="row.consultNoText"
+            :content="row.consultNoTip || row.consultNoText"
+            placement="top"
+          >
+            <span class="mono">{{ row.consultNoText }}</span>
+          </el-tooltip>
+          <span v-else style="color: var(--el-text-color-placeholder)">—</span>
+        </template>
       </el-table-column>
       <el-table-column prop="studentName" label="姓名" width="100" />
       <el-table-column label="性别" width="64">
@@ -147,7 +157,14 @@
   <el-dialog v-model="receiveVisible" title="接收学员" width="720px" top="5vh" destroy-on-close>
     <el-form ref="receiveRef" :model="receiveForm" :rules="receiveRules" label-width="110px" label-position="right">
       <el-form-item label="学员">
-        <el-input :model-value="activeConsult ? `${activeConsult.studentName} · ${activeConsult.consultNo}` : ''" disabled />
+        <el-input
+          :model-value="
+            activeConsult
+              ? `${activeConsult.studentName} · ${activeConsult.consultNoText || '—'}`
+              : ''
+          "
+          disabled
+        />
       </el-form-item>
       <!-- ★ 2026-10-06：接受班级只读 —— 由咨询 / 初高推送时决定，此处不可改 -->
       <el-form-item label="接受班级">
@@ -203,11 +220,25 @@
         </el-col>
       </el-row>
       <!-- 宿舍 / 床位只有大学部有；初高学生的宿舍在初高侧另行分配 -->
-      <el-form-item v-if="!activeConsult?.targetIsJh" label="宿舍 / 床位">
-        <BedSelect v-model="dormPick" />
-      </el-form-item>
+      <template v-if="!activeConsult?.targetIsJh">
+        <el-form-item label="楼号" required prop="dormPick">
+          <ClassDormCascade
+            v-model="dormPick"
+            :class-name="activeConsult?.intendClassName || ''"
+            stage="job"
+            :gender="activeConsult?.gender || 0"
+          />
+        </el-form-item>
+      </template>
       <el-form-item label="备注">
-        <el-input v-model="receiveForm.remark" type="textarea" :rows="2" />
+        <el-input
+          v-model="receiveForm.remark"
+          type="textarea"
+          :rows="2"
+          maxlength="100"
+          show-word-limit
+          placeholder="选填，不超过 100 个字符"
+        />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -245,7 +276,7 @@ import type { ConsultItem } from '@/class/api/types';
 import { useDictStore } from '@/class/stores/dict';
 // ★ 2026-10-22：学历选项与学生档案统一（初中/高中/专科/本科/研究生），收口在 shared-types
 import { EDUCATION_OPTIONS } from 'shared-types';
-import BedSelect, { type BedPick } from '@/class/components/BedSelect.vue';
+import ClassDormCascade, { type ClassDormPick } from '@/class/components/ClassDormCascade.vue';
 
 /**
  * 待接收学员（咨询同步）
@@ -336,7 +367,7 @@ const receiveVisible = ref(false);
 const saving = ref(false);
 const receiveRef = ref<FormInstance>();
 const activeConsult = ref<ConsultItem | null>(null);
-const dormPick = ref<BedPick>({ dormId: null, dormNo: null, bedNo: null });
+const dormPick = ref<ClassDormPick>({ building: '', dormId: '', dormNo: '', bedId: '', bedNo: '' });
 const receiveForm = reactive<{
   classId: string | null;
   studentNo: string;
@@ -359,8 +390,27 @@ const receiveForm = reactive<{
   remark: '',
 });
 
-// ★ 2026-10-06：接受班级只读，无需校验（由咨询/初高推送时决定）
-const receiveRules: FormRules = {};
+// ★ 2026-10-26：除「备注」外全部必填；备注非必填、长度≤100（模板已 maxlength）
+const receiveRules: FormRules = {
+  age: [{ required: true, message: '请填写年龄', trigger: 'blur' }],
+  phone: [{ required: true, message: '请填写手机号', trigger: 'blur' }],
+  parentPhone: [{ required: true, message: '请填写家长手机号', trigger: 'blur' }],
+  education: [{ required: true, message: '请选择学历', trigger: 'change' }],
+  enrollDate: [{ required: true, message: '请选择入学日期', trigger: 'change' }],
+  studentStatus: [{ required: true, message: '请选择学生状态', trigger: 'change' }],
+  dormPick: [
+    {
+      required: true,
+      validator: (_r, _v, cb) => {
+        // 初高学生不在此选宿舍；大学部必须选齐楼号 / 宿舍号 / 床位号
+        if (activeConsult.value?.targetIsJh) return cb();
+        if (dormPick.value.dormId && dormPick.value.bedNo) return cb();
+        cb(new Error('请选择楼号 / 宿舍号 / 床位号'));
+      },
+      trigger: 'change',
+    },
+  ],
+};
 
 function openReceive(row: ConsultItem): void {
   activeConsult.value = row;
@@ -380,7 +430,7 @@ function openReceive(row: ConsultItem): void {
    */
   receiveForm.studentStatus = 3;
   receiveForm.remark = row.remark || '';
-  dormPick.value = { dormId: null, dormNo: null, bedNo: null };
+  dormPick.value = { building: '', dormId: '', dormNo: '', bedId: '', bedNo: '' };
   receiveVisible.value = true;
 
   consultReceivePlan(row.id)
@@ -411,9 +461,10 @@ async function submitReceive(): Promise<void> {
       enrollDate: receiveForm.enrollDate,
       studentStatus: receiveForm.studentStatus,
       // 初高学生没有「大学部宿舍」这套床位，接收时不传（后端也不会用）
-      dormId: activeConsult.value.targetIsJh ? null : dormPick.value.dormId,
-      dormNo: activeConsult.value.targetIsJh ? null : dormPick.value.dormNo,
-      bedNo: activeConsult.value.targetIsJh ? null : dormPick.value.bedNo,
+      dormId: activeConsult.value.targetIsJh ? null : (dormPick.value.dormId || null),
+      dormNo: activeConsult.value.targetIsJh ? null : (dormPick.value.dormNo || null),
+      bedNo: activeConsult.value.targetIsJh ? null : (Number(dormPick.value.bedNo) || null),
+      bedId: activeConsult.value.targetIsJh ? null : (dormPick.value.bedId || null),
       remark: receiveForm.remark || null,
     });
     ElMessage.success('已接收，学员已落入学员档案');

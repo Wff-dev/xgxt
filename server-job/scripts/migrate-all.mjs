@@ -79,6 +79,14 @@ const POST_STEPS = [
   // ★ 2026-10-26 催费设置表（提前天数等 KV 配置）
   ['scripts/_migrate-finance-setting-20261026.mjs', '催费设置表', 'sms_finance', ['--apply']],
 
+  /*
+   * ★ 2026-10-26：教学域「催费」→「缴费」改名。
+   *   只改代码不改权限库 → 页面名与 t_perm_menu.item_name 对不上，
+   *   非管理员账号的 rolePageDefaults 推导不出 /teaching/fee，侧栏整块消失。
+   *   脚本幂等；已经改过 / 新库（导入的 sms_perm.sql 已是新名字）都会秒过。
+   */
+  ['scripts/fix-teach-fee-item-name.mjs', '教学缴费改名', 'sms_perm'],
+
   /**
    * ★ 2026-10-22：咨询状态对账
    *

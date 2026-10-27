@@ -506,7 +506,7 @@ watch(() => route.fullPath, (p) => {
                 >
                   <span class="child-title">{{ child.title }}</span>
                   <span
-                    v-if="child.title === '催费' && feeUrgeBadge.count > 0"
+                    v-if="child.title === '缴费' && feeUrgeBadge.count > 0"
                     class="menu-red-dot"
                     :title="feeUrgeBadge.tooltip"
                   />

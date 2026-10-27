@@ -27,7 +27,8 @@ import { db, knexRaw } from '../utils/db';
 import { BizError } from '../middleware/errorHandler';
 import { nextBillNoForPay } from '../utils/orderNo';
 import { getStandard, isVoucherReusable, expectedSourceOf } from './fee-standard.service';
-import { addMonths } from '../utils/dateMath';
+// ★ 2026-10-26 到期日计算抽公共（回填脚本 / 催费读侧走同一份规则）
+import { computeExpireDate, expireUnitOf } from './expire';
 import { findArchiveStudent } from './student-archive';
 // ★ 2026-10-22 核对到账后立即回推咨询侧（推进学生状态 + 同步教学学籍）
 import { remotePost } from '../../shared/http';
@@ -620,21 +621,21 @@ async function calcExpireDate(
   monthsHint?: number,
 ): Promise<string | null> {
   const feeType = Number(row.fee_type);
-  const unit: 'M' | 'Y' | null =
-    feeType === FeeType.MEAL || feeType === FeeType.ACCOMMODATION
-      ? 'M'
-      : feeType === FeeType.INSURANCE
-        ? 'Y'
-        : null;
-  /** 学费 / 试学费 / 押金 / 校服 → 没有有效期，永远不写到期日（用户口径「学费没有时间限制」） */
+  // 没有到期概念的费用（学费/试学费/押金/校服/补费…）直接返回
+  // ★ 口径统一在 services/expire.ts（核对入账与历史回填走同一份，避免两套规则）
+  const unit = expireUnitOf(feeType);
   if (!unit) return null;
 
-  let months: number;
-  if (monthsHint && monthsHint > 0) {
-    months = unit === 'Y' ? monthsHint * 12 : monthsHint;
-  } else {
+  /**
+   * ★ 2026-10-27 补费明细里带了周期（住宿/餐费=月，保险=年）→ 直接用，不再反推
+   *
+   * 「金额 ÷ 标准价」在标准价改过之后会算错月数（本来 6 个月的账算成 5 个月），
+   * 所以明细里给了月数就以月数为准，这时连标准价都不用查。
+   */
+  const hint = Number(monthsHint) || 0;
+  let std = 0;
+  if (!hint) {
     // 取该费用在该部门的标准价（没有标准就算不出来，留空而不是瞎算）
-    let std = 0;
     try {
       const s = await getStandard(feeType, Number(row.dept_code ?? 1));
       std = Number(s.amount) || 0;
@@ -642,12 +643,6 @@ async function calcExpireDate(
       std = 0;
     }
     if (std <= 0) return null;
-
-    const paid = Number(row.amount) || 0;
-    // 缴了钱至少给一个周期（优惠后不足一个标准价时，不能让到期日不动）
-    let units = Math.floor(paid / std);
-    if (units < 1) units = 1;
-    months = unit === 'Y' ? units * 12 : units;
   }
 
   // 该生该费用「已入账」账单里最晚的到期日 —— 续费从这里接
@@ -663,8 +658,16 @@ async function calcExpireDate(
     .first();
 
   const prevDate = prev?.d ? toDateStr(prev.d) : undefined;
-  const base = prevDate && prevDate > payDate ? prevDate : payDate;
-  return addMonths(base, months);
+  // ★ 计算规则统一在 services/expire.ts（回填脚本走同一份，避免两套口径）
+  return computeExpireDate({
+    feeType,
+    amount: Number(row.amount) || 0,
+    payDate,
+    stdAmount: std,
+    prevExpire: prevDate,
+    // 补费给了明确周期 → 按周期算（保险费填的是年，先折成月，与 unit 的 M/Y 口径一致）
+    ...(hint ? { months: unit === 'Y' ? hint * 12 : hint } : {}),
+  });
 }
 
 export async function verifyFee(

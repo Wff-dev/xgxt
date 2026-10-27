@@ -32,6 +32,8 @@ import {
 } from 'shared-types/consult';
 import type { ConsultToFormalResult } from 'shared-types/consult';
 import { FEE_ORDER_TABLE, PENDING_FEE_STATUSES, parseOrderItemDetail } from '../services/fee-order.service';
+// ★ 2026-10-27 方案 A：分班后把班级补进该学生名下的历史单据（只补空、不覆盖）
+import { syncClassSnapshot } from '../services/class-snapshot.service';
 // ★ 2026-10-26 发起退费下拉要按「有没有在途退费单」排除，不再只看状态
 import { REFUND_TABLE } from '../services/refund.service';
 import { ok, page } from '../utils/response';
@@ -1921,6 +1923,23 @@ studentRouter.post(
       await db(STUDENT_TABLE)
         .where({ id })
         .update({ class_id: classId, class_name: targetName, update_time: new Date() });
+
+      /**
+       * ★ 2026-10-27（方案 A）：把班级补进该学生名下**还没有班级**的单据。
+       *
+       *   收款单 / 财务缴费单 / 财务账单的 class_name 都是建单那一刻的快照，
+       *   分班不会自动更新 → 分班前建的试学费单在「收款与缴费」「缴费管理」里
+       *   一直显示「未分班」（用户实测：金牙好已 Q19，单据仍空白）。
+       *
+       *   口径：只补空、不覆盖（转班后旧单据保留当时的对账快照）。
+       *   ⚠️ 补快照失败不影响分班本身，只记日志。
+       */
+      try {
+        await syncClassSnapshot(id, targetName);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[consult] 分班后补单据班级失败', err);
+      }
     }
 
     /* ---- ★ 2026-10-20 状态推进挪到「接收」时刻 ----

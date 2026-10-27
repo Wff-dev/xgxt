@@ -35,22 +35,43 @@ export interface ArchiveStudentRow {
   headTeacherName: string | null;
 }
 
-/** 批量按 studentId（= 统一表 source_id 或 id）取档案，返回 id → 档案 */
+/** 查档案的键：直接传 id 字符串，或传 { studentId, studentNo } 两个键都试 */
+export type ArchiveKey = string | { studentId?: string | null; studentNo?: string | null };
+
+/** 批量按 studentId（= 统一表 source_id 或 id）或学号取档案，返回 任意键 → 档案 */
 export async function lookupStudentArchive(
-  ids: Array<string | null | undefined>,
+  keysIn: Array<ArchiveKey | null | undefined>,
 ): Promise<Record<string, ArchiveStudentRow>> {
-  const keys = [...new Set(ids.filter(Boolean) as string[])];
-  if (!keys.length) return {};
+  /**
+   * ★ 2026-10-26 三键匹配：`source_id / id / student_no`
+   *
+   * 财务账单的 student_id 是**财务自己的学生 id**（如 `FSB-U26005`），
+   * 教学统一表里学生主键是 `seed-ustu-05`、`source_id` 常为空，
+   * 两边唯一对得上的是**学号**（`U26005`）。
+   * 只按 id/source_id 查 → 手机号、家长手机号、班主任全部空白（列表一片「—」）。
+   */
+  const keys: string[] = [];
+  for (const k of keysIn) {
+    if (!k) continue;
+    if (typeof k === 'string') {
+      keys.push(k);
+      continue;
+    }
+    if (k.studentId) keys.push(String(k.studentId));
+    if (k.studentNo) keys.push(String(k.studentNo));
+  }
+  const uniq = [...new Set(keys)].filter(Boolean);
+  if (!uniq.length) return {};
 
   let rows: any[] = [];
   try {
     // 分片 500 条，避免超长 IN
-    for (let i = 0; i < keys.length; i += 500) {
-      const chunk = keys.slice(i, i + 500);
+    for (let i = 0; i < uniq.length; i += 500) {
+      const chunk = uniq.slice(i, i + 500);
       const part = (await db('sms_common.t_uni_student')
         .where('is_deleted', false)
         .where((b: any) => {
-          b.whereIn('source_id', chunk).orWhereIn('id', chunk);
+          b.whereIn('source_id', chunk).orWhereIn('id', chunk).orWhereIn('student_no', chunk);
         })
         .select(
           'id',
@@ -83,9 +104,10 @@ export async function lookupStudentArchive(
       parentPhone: r.parent_phone ?? null,
       headTeacherName: r.head_teacher_name ?? null,
     };
-    // source_id 和 id 都建索引，调用方传哪个都能命中
-    map[String(r.source_id || r.id)] = row;
+    // source_id / id / student_no 都建索引，调用方传哪个都能命中
+    if (r.source_id) map[String(r.source_id)] = row;
     map[String(r.id)] = row;
+    if (r.student_no) map[String(r.student_no)] = row;
   }
   return map;
 }

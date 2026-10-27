@@ -21,35 +21,34 @@
  * 【本文件做什么】
  *   ① 维护一张**显式映射表** `PERM_POINT_TO_ACTION_CODES`：
  *        树上的 (module, item, action)  →  若干个 legacy 操作码
- *   ② 用**差异存储**把权限树「改动的那部分」叠加到静态兜底表上。
+ *   ② 用**权限树权威**模型把「管理员实际勾了什么」落到接口判权上。
  *
  * ============================================================
- * 【★★ 差异存储语义（本文件最核心的一条，别改）】
+ * 【★★ 判权模型（2026-10-26 重写：权限树权威）】
  *
- *   基线（baseline）= **本功能第一次启用时**权限树里的勾选状态，
- *   快照在 `sms_perm.t_perm_role_perm_baseline`（首次使用自动灌入，幂等）。
+ *   逐角色判定，任一角色放行即放行：
  *
- *      新增授权 = 现在勾了 − 基线勾过        → 映射成操作码【补上】
- *      撤销授权 = 基线勾过 − 现在没勾        → 映射成操作码【移除】
+ *     该职位在「码所属页面」上没配过  → 走各模块的静态兜底表（存量零影响）
+ *     配过 且 勾了这个动作            → 放行
+ *     配过 但 没勾（如只勾了查看）    → 本角色拒绝 → 写接口 403
  *
- *      最终操作码(role) = 静态兜底表(role) ∪ mapped(新增) − mapped(撤销)
+ *   ⚠️ 为什么要改（2026-10-26 用户报障）：
+ *     旧版是「差异存储」—— 只把**相对基线快照的改动**叠加到静态表上。
+ *     基线是本功能启用那一刻的快照，因此「树里本来就勾着的动作」不算改动
+ *     → 不授权 → 掉回静态表。而静态表只登记了少数岗位
+ *     （财务 FIN_ROLE_OPERATIONS 只有 FIN_STAFF / SYS_ADMIN），于是：
+ *       校长 159 个动作全勾了 → 点「财务核对」仍然弹「您没有该操作的权限」。
+ *     用户的预期很明确：**页面管理和职位权限分配给完了，就该能操作；
+ *     只给查看就只能查看。** 因此判权必须以权限树为唯一权威。
  *
- *   为什么必须这样（血的教训，2026-10-07 实测）：
- *     直接把权限树当权威会**误伤**——树的 `teach` 模块当初是按
- *     「页面可见范围」校准的，不是按「按钮」口径：
- *       · 校长（R12）在 teach 下只勾了 view/export
- *         → 会把「新增学生 / 新建考试 / 录入成绩 / 发起退费 …」9 个按钮收走
- *       · 教员（R04）、助教（R05）同理各丢 1 个 / 4 个
- *     而按「差异存储」：**打通当天零变化**（没有差异 ⇒ 不干预），
- *     管理员之后在界面上勾/取消 → 立刻双向生效。
- *
- *   ⚠️ 这也意味着：树里**本来就勾着**、但静态表里没有的动作，
- *      不会自动授权（它不是一次「改动」）。这是刻意的 ——
- *      保证上线当天对全站 16 个账号零行为变化。
+ *   ⚠️ 旧版担心的「误伤」（校长在 teach 下只勾 view/export 会丢 9 个按钮）
+ *      现在不再是问题 —— 用户已经把该给的都给了；而且这正是
+ *      「没勾就是不能操作」的预期语义。名单见
+ *      `scripts/_audit_perm_authoritative.mts` 的对照输出。
  *
  * ============================================================
  * 【降级原则】
- *   ⚠️ 与 rolePageLedger 一样：查库失败 / 基线缺失 → 当作「没有任何覆盖」，
+ *   ⚠️ 与 rolePageLedger 一样：查库失败 / 无缓存 → 当作「没配过」，
  *      原样返回静态表。绝不能因为权限表抖一下就让全站按钮消失、接口全 403。
  * ============================================================
  */
@@ -104,6 +103,45 @@ function permCodeOf(itemKey: string, action: string): string {
   const item = itemKey.split('||')[1];
   return `perm:${item}:${action}`;
 }
+
+/* ============================================================
+ * 2.5 ★ 反向索引：操作码 → 拥有它的功能点（module||item）
+ *
+ * 【为什么需要】
+ *   判权时要回答一个问题：「给这个操作码的那些页面里，当前职位到底配过没有？」
+ *     · 配过 → 以权限树为准（勾了才放行）
+ *     · 从没配过 → 回落到各模块的静态表（老账号零影响）
+ *   没有这张反向表，就只能盲猜 owner，判权会漏。
+ *
+ * ⚠️ 同一个操作码可能被多个页面共用（如 `job:refund:apply` 同时挂
+ *    「退费」和「休学/退学审批」），所以 value 是数组，判定时取「任一」。
+ * ============================================================ */
+const CODE_OWNERS: Map<string, string[]> = (() => {
+  const m = new Map<string, string[]>();
+  const add = (itemKey: string, code: string): void => {
+    const arr = m.get(code);
+    if (!arr) {
+      m.set(code, [itemKey]);
+      return;
+    }
+    if (!arr.includes(itemKey)) arr.push(itemKey);
+  };
+  for (const [itemKey, actMap] of Object.entries(PERM_POINT_TO_ACTION_CODES)) {
+    for (const codes of Object.values(actMap)) codes.forEach((c) => add(itemKey, c));
+  }
+  for (const [itemKey, actions] of Object.entries(PERM_MODULE_ACTIONS)) {
+    actions.forEach((a) => add(itemKey, permCodeOf(itemKey, a)));
+  }
+  return m;
+})();
+
+/**
+ * 永远放行的职位（不受权限树收权影响）
+ *
+ * ⚠️ 系统管理员必须在这里：否则哪天管理员手滑把自己的「职位权限分配」
+ *    取消勾选，就再也进不去权限管理页，只能改数据库救回来。
+ */
+const ALWAYS_ALLOW_ROLES = new Set(['SYS_ADMIN']);
 
 /* ============================================================
  * 3. 基线表（快照）
@@ -176,6 +214,13 @@ export interface RoleActionOverride {
   addedCodes?: Set<string>;
   /** ★ 预计算：「撤销授权」映射出的操作码 */
   removedCodes?: Set<string>;
+  /**
+   * ★★ 2026-10-26：当前勾选状态映射出的**全部**操作码（不看基线）。
+   *
+   * 判权已改为「权限树权威」模型（见 §7）：该职位在某个页面上只要有勾选记录，
+   * 这个页面上的操作就以**这里**为准 —— 在集合里 = 允许操作，不在 = 拒绝。
+   */
+  grantedCodes: Set<string>;
 }
 
 const CACHE_TTL_MS = 15_000;
@@ -222,7 +267,12 @@ export async function loadRoleActionOverrides(
 
       let ov = map.get(code);
       if (!ov) {
-        ov = { touchedItems: new Set(), granted: new Set(), baselineGranted: new Set() };
+        ov = {
+        touchedItems: new Set(),
+        granted: new Set(),
+        baselineGranted: new Set(),
+        grantedCodes: new Set(),
+      };
         map.set(code, ov);
       }
       ov.touchedItems.add(`${mod}||${item}`);
@@ -241,7 +291,12 @@ export async function loadRoleActionOverrides(
       if (!code) continue;
       let ov = map.get(code);
       if (!ov) {
-        ov = { touchedItems: new Set(), granted: new Set(), baselineGranted: new Set() };
+        ov = {
+        touchedItems: new Set(),
+        granted: new Set(),
+        baselineGranted: new Set(),
+        grantedCodes: new Set(),
+      };
         map.set(code, ov);
       }
       ov.baselineGranted.add(
@@ -250,10 +305,12 @@ export async function loadRoleActionOverrides(
     }
 
     /* ---- ★ 预计算「新增 / 撤销」的操作码（供各业务模块同步判定）---- */
+    /* ---- ★★ 2026-10-26：再预计算「当前实际勾选」映射出的全部操作码 ---- */
     for (const ov of map.values()) {
       const d = diffOfOverride(ov);
       ov.addedCodes = new Set(d.added);
       ov.removedCodes = new Set(d.removed);
+      ov.grantedCodes = grantedCodesOf(ov);
     }
   } catch {
     /**
@@ -303,7 +360,53 @@ function codesOfChanged(
 }
 
 /**
- * 把「相对基线的改动」叠加到 legacy 操作码列表上。
+ * ★★ 当前勾选状态 → 操作码（**不看基线**，只看此刻树里勾了什么）
+ *
+ * 这是「权限树权威」模型的数据基础：把该职位勾过的每个动作都换算成
+ * 后端的操作码，得到一张白名单。
+ */
+function grantedCodesOf(ov: RoleActionOverride): Set<string> {
+  const out = new Set<string>();
+
+  const collect = (itemKey: string, actMap: Record<string, string[]>): void => {
+    for (const [act, codes] of Object.entries(actMap)) {
+      if (!ov.granted.has(`${itemKey}||${act}`)) continue;
+      codes.forEach((c) => out.add(c));
+    }
+  };
+
+  for (const [itemKey, actMap] of Object.entries(PERM_POINT_TO_ACTION_CODES)) {
+    collect(itemKey, actMap);
+  }
+  for (const [itemKey, actions] of Object.entries(PERM_MODULE_ACTIONS)) {
+    collect(itemKey, Object.fromEntries(actions.map((a) => [a, [permCodeOf(itemKey, a)]])) as any);
+  }
+  return out;
+}
+
+/**
+ * 该职位在「拥有这个操作码的页面」上有没有配置记录？
+ *
+ * true  = 配过 → 权限树是唯一权威（勾了才给，没勾就收）
+ * false = 没配过 → 交回各模块的静态表（保证没配过的老账号不被误伤）
+ */
+function isConfigured(
+  ov: RoleActionOverride | null | undefined,
+  actionCode: string,
+): boolean {
+  if (!ov) return false;
+  const owners = CODE_OWNERS.get(actionCode);
+  if (!owners || !owners.length) return false;
+  return owners.some((k) => ov.touchedItems.has(k));
+}
+
+/**
+ * 把权限树的状态叠加到 legacy 操作码列表上（**权限树权威版**）。
+ *
+ * 语义（2026-10-26 重写，替换原「差异基线」语义）：
+ *   · 该职位在码所属页面上**没配过** → 原样返回静态表（零影响）
+ *   · 配过 → 静态表只保留「树上没登记过的码」（未登记 = 界面上没得勾，
+ *            不能因为没勾选就收回），有登记的码一律以树为准
  *
  * @param baseCodes 该角色的静态兜底操作码（ROLE_OPERATION_PERMISSIONS）
  * @param ov        该角色的权限点覆盖（null = 树里没有这个角色 → 不干预）
@@ -312,26 +415,30 @@ export function overlayActionCodes(
   baseCodes: string[],
   ov: RoleActionOverride | null,
 ): string[] {
-  if (!ov) return baseCodes;
+  if (!ov || ov.touchedItems.size === 0) return baseCodes;
 
-  /** 现在勾了 − 基线勾过 = 新增 */
-  const added = codesOfChanged(
-    (keys) =>
-      new Set(Array.from(keys).filter((k) => ov.granted.has(k) && !ov.baselineGranted.has(k))),
-    ov,
-  );
-  /** 基线勾过 − 现在没勾 = 撤销 */
-  const removed = codesOfChanged(
-    (keys) =>
-      new Set(Array.from(keys).filter((k) => !ov.granted.has(k) && ov.baselineGranted.has(k))),
-    ov,
-  );
+  const granted = ov.grantedCodes || (ov.grantedCodes = grantedCodesOf(ov));
+  const set = new Set<string>();
 
-  if (!added.length && !removed.length) return baseCodes;
+  for (const c of baseCodes) {
+    const owners = CODE_OWNERS.get(c);
+    // 树上没有登记这个码（界面上勾不到）→ 保留静态表结论，不受勾选影响
+    if (!owners || !owners.length) {
+      set.add(c);
+      continue;
+    }
+    // 树上登记过、但当前职位在这个页面上没配过 → 同样保留静态表结论
+    if (!owners.some((k) => ov!.touchedItems.has(k))) {
+      set.add(c);
+      continue;
+    }
+    // 配过 → 勾了才留
+    if (granted.has(c)) set.add(c);
+  }
 
-  const set = new Set(baseCodes);
-  removed.forEach((c) => set.delete(c));
-  added.forEach((c) => set.add(c));
+  // 树上新勾出来的码（静态表里本来没有的），补进去
+  granted.forEach((c) => set.add(c));
+
   return Array.from(set);
 }
 
@@ -389,29 +496,36 @@ export async function preloadRoleActionOverrides(): Promise<void> {
   }
 }
 
-function addedCodesOf(ov: RoleActionOverride): Set<string> {
-  if (!ov.addedCodes) ov.addedCodes = new Set(diffOfOverride(ov).added);
-  return ov.addedCodes;
-}
-
-function removedCodesOf(ov: RoleActionOverride): Set<string> {
-  if (!ov.removedCodes) ov.removedCodes = new Set(diffOfOverride(ov).removed);
-  return ov.removedCodes;
-}
+/* ★ 2026-10-26：addedCodesOf / removedCodesOf 随「差异基线」判权一起下线。
+ *   现在判权只看 grantedCodes（当前勾选），不再需要「相对基线的差异」。
+ *   `diffOfOverride` 仍保留，用于诊断脚本对比「树 vs 基线」。 */
 
 /**
- * ★★ 统一收口入口：把权限树的「显式改动」叠加到模块自己的静态判权上。
+ * ★★ 统一收口入口：**权限树权威**判权（2026-10-26 重写）。
  *
- * 语义（逐角色判定，任一角色放行即放行 —— 与各模块原有的 `hasAnyRole` 口径一致）：
+ * 【旧语义及它的问题】
+ *   旧版只把「相对基线快照的改动」叠加到静态表上：
+ *     新增授权 → 放行 / 显式撤销 → 拒绝 / 没动过 → 静态表
+ *   基线是本功能启用那一刻的快照，所以「树里本来就勾着的动作」不算改动
+ *   → 不会授权 → 掉回静态表。而静态表只登记了少数岗位
+ *   （财务 FIN_ROLE_OPERATIONS 只有 FIN_STAFF / SYS_ADMIN），
+ *   于是「校长 159 个动作全勾了，点财务核对依旧 403」。
+ *
+ * 【新语义】逐角色判定，任一角色放行即放行（与各模块原有 hasAnyRole 口径一致）：
  *
  *   for each role:
- *     · 该 role 的这个码被【显式授权】  → 放行（覆盖静态表）
- *     · 该 role 的这个码被【显式撤销】  → 跳过（不再贡献放行）
- *     · 其余情况（含权限树里没这个角色） → 走模块自己的静态判权 staticAllow(role)
+ *     · SYS_ADMIN                              → 直接放行（防止管理员把自己锁死）
+ *     · 该职位在「码所属页面」上**没配过**     → 走模块静态判权 staticAllow(role)
+ *     · 配过 且 勾了这个动作                   → 放行
+ *     · 配过 但 没勾这个动作（如只勾了查看）   → 本角色不放行
  *
- * @param roleCodes    用户拥有的角色码（role_code，如 TEACH_HEAD）
- * @param actionCode   本次要判的操作码（如 class:student:add）
- * @param staticAllow  模块自己的静态判权：该角色是否被允许
+ *   一句话：管理员配过的页面，以权限树为准；没配过的，保持各模块原有默认。
+ *   这样「页面管理 + 职位权限分配」给全了，登录后就能真的操作，
+ *   而只给「查看」的职位只能看、写接口会 403。
+ *
+ * @param roleCodes    用户拥有的角色码（role_code，如 RM_PRINCIPAL）
+ * @param actionCode   本次要判的操作码（如 finance:fee:verify）
+ * @param staticAllow  模块自己的静态判权：该角色是否被允许（未配置时的兜底）
  */
 export function resolveActionWithOverlay(
   roleCodes: string[] | undefined,
@@ -421,33 +535,59 @@ export function resolveActionWithOverlay(
   const roles = Array.isArray(roleCodes) ? roleCodes : [];
   let allow = false;
   for (const role of roles) {
+    if (ALWAYS_ALLOW_ROLES.has(role)) return true;
+
     const ov = cache ? cache.map.get(role) : null;
-    if (ov) {
-      if (addedCodesOf(ov).has(actionCode)) return true;
-      if (removedCodesOf(ov).has(actionCode)) continue;
+    if (!isConfigured(ov, actionCode)) {
+      // 该职位没配过这个页面 → 各模块静态表说了算（存量账号零影响）
+      if (staticAllow(role)) allow = true;
+      continue;
     }
-    if (staticAllow(role)) allow = true;
+    // 配过 → 以权限树为准
+    const granted = ov!.grantedCodes || (ov!.grantedCodes = grantedCodesOf(ov!));
+    if (granted.has(actionCode)) return true;
   }
   return allow;
 }
 
 /* ============================================================
- * 8. ★ 前端按钮显隐用：取「被权限树显式撤销」的操作码
+ * 8. ★ 前端按钮显隐用：取「权限树明确没给」的操作码
  *
  *   背景：job/edu 板块的按钮默认显隐由「角色」决定（各页面自己写死的
- *   角色白名单，如 `canInitiate = TEACH_HEAD`），这套默认是对的。
- *   但管理员在「职位权限分配」里取消某个动作后，对应按钮要跟着消失。
+ *   角色白名单，如 `canInitiate = TEACH_HEAD`）。
+ *   管理员在「职位权限分配」里**没勾**某个动作时，对应按钮要跟着消失，
+ *   否则用户点了就吃 403 红字（这正是用户报障的现象）。
  *
- *   语义与后端总闸（boardPermGate）一致：只叠加「相对基线的撤销」，
- *   没被管理员动过的码，前端默认行为与从前**完全一致**（零回归）。
+ *   ★ 2026-10-26 语义对齐后端：不再只看「相对基线的撤销」，
+ *     而是「该页面配过 && 这个动作没勾」→ 收。与 §7 的判权完全同源，
+ *     避免「按钮在但接口 403」或「按钮没了但接口能通」。
+ *
+ *   ⚠️ 配过的页面里，**树上没登记的动作**不收（界面上勾不到，不能怪用户）。
  * ============================================================ */
 export function getRemovedActionCodesForRoles(roleCodes: string[] | undefined): string[] {
   const roles = Array.isArray(roleCodes) ? roleCodes : [];
   const set = new Set<string>();
+
   for (const role of roles) {
+    if (ALWAYS_ALLOW_ROLES.has(role)) continue;
     const ov = cache ? cache.map.get(role) : null;
-    if (!ov) continue;
-    removedCodesOf(ov).forEach((c) => set.add(c));
+    if (!ov || ov.touchedItems.size === 0) continue;
+
+    const granted = ov.grantedCodes || (ov.grantedCodes = grantedCodesOf(ov));
+
+    /**
+     * ⚠️ 必须**按操作码**判定，不能按「动作」判定：
+     *   一个码常常由同一页面的多个动作共同映射
+     *   （如 `job:dorm:edit` ← 编辑房间 / 删除房间 / 分配床位 / 分派宿舍）。
+     *   按动作逐个累加会把「只勾了其中两个」误判成「这个码没有」，
+     *   于是按钮被隐藏、接口其实放行 —— 两边打架。
+     *   正确口径：码所属页面配过 && 这个码不在 grantedCodes 里 → 才是真的没给。
+     */
+    for (const [code, owners] of CODE_OWNERS) {
+      if (granted.has(code)) continue;
+      if (!owners.some((k) => ov.touchedItems.has(k))) continue;
+      set.add(code);
+    }
   }
   return Array.from(set);
 }

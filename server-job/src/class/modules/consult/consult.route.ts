@@ -179,11 +179,115 @@ function toPushItem(
     isTransfer,
     isUpgrade,
     sourceKind: isRepeatIn ? '末班重修' : isTransfer ? '换班转入' : isUpgrade ? '初高升学' : '咨询新生',
+    /**
+     * ★ 2026-10-27：`consultNo` 是**幂等键**，不是单号
+     *
+     *   推送那一刻「有学号用学号，没有就用咨询学生 id」
+     *   （见 consult/routes/student.route.ts 的 consultNoOf），
+     *   于是分班前推的单会显示成一串 UUID —— 用户反馈「咨询单号是乱码」。
+     *
+     *   用户口径（2026-10-27 二次确认）：**不显示学号，显示咨询侧的收款单号**
+     *   （形如 SK20261026-004）。单号在咨询库，列表/详情由
+     *   `fillConsultOrderNo()` 批量回填到 `consultNoText`。
+     *
+     *   ⚠️ `consultNo` 本身一个字符都不动 —— 接收/驳回接口还靠它认单，
+     *      它同时是查重（已推送 / 已分班）的唯一依据。
+     */
     canReceive: user ? canHandlePush(user, row) : false,
   };
 }
 
 /* ------------------------------ 列表 ------------------------------ */
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * ★ 2026-10-27：给待接收单据补上「咨询收款单号」（列表/详情共用）
+ *
+ * 【为什么需要单独补】
+ *   `t_uni_consult_push.consult_no` 存的是**幂等键**（学号 或 咨询学生 id），
+ *   不是单号。用户要求「咨询单号」一列显示咨询侧真正能对账的那张——收款单号
+ *   （`SK20261026-004`），而单号只存在于咨询库的 `t_consult_fee_order` 里。
+ *
+ * 【一次查询搞定整页】
+ *   ① 推送单 → 咨询学生 id：consult_no 是 UUID 就直接用；是学号就按学号反查；
+ *      `origin_student_id`（转班/升学单）也纳入。
+ *   ② 咨询学生 id → 该生全部收款单号（按建单时间升序）。
+ *   ③ 展示取**最新一笔**；`consultNoTip` 放全部单号，前端做悬浮提示。
+ *
+ * 【降级】查不出一律不阻断列表（try/catch），只是这一列空着。
+ *   ⚠️ 换班转入 / 初高升学这类教学内部流转的单没有咨询收款单，
+ *      这一列本来就是空（前端显示「—」），不是 bug。
+ */
+async function fillConsultOrderNo(
+  rows: Array<Record<string, unknown>>,
+  items: Array<Record<string, unknown>>,
+): Promise<void> {
+  if (!rows.length) return;
+  try {
+    /* -------- ① 推送单 → 咨询学生 id -------- */
+    const idKeys = new Set<string>();
+    const noKeys = new Set<string>();
+    for (const r of rows) {
+      const cn = String(r.consult_no ?? '').trim();
+      if (UUID_RE.test(cn)) idKeys.add(cn);
+      else if (cn) noKeys.add(cn);
+      const origin = String(r.origin_student_id ?? '').trim();
+      if (origin) idKeys.add(origin);
+      const no = String(r.student_no ?? '').trim();
+      if (no) noKeys.add(no);
+    }
+
+    const keyToId = new Map<string, string>();
+    idKeys.forEach((id) => keyToId.set(id, id));
+
+    if (noKeys.size) {
+      const stus = (await db('t_consult_student')
+        .withSchema('sms_consult')
+        .whereIn('student_no', [...noKeys])
+        .where({ is_deleted: false })
+        .select('id', 'student_no')) as Array<Record<string, unknown>>;
+      for (const s of stus) {
+        keyToId.set(String(s.id), String(s.id));
+        keyToId.set(String(s.student_no), String(s.id));
+      }
+    }
+
+    /* -------- ② 咨询学生 id → 收款单号 -------- */
+    const ids = [...new Set([...keyToId.values()])];
+    const ordersByStudent = new Map<string, string[]>();
+    if (ids.length) {
+      const orders = (await db('t_consult_fee_order')
+        .withSchema('sms_consult')
+        .whereIn('consult_student_id', ids)
+        .where({ is_deleted: false })
+        .select('consult_student_id', 'order_no', 'create_time')
+        .orderBy('create_time', 'asc')) as Array<Record<string, unknown>>;
+      for (const o of orders) {
+        const sid = String(o.consult_student_id);
+        const arr = ordersByStudent.get(sid) || [];
+        arr.push(String(o.order_no));
+        ordersByStudent.set(sid, arr);
+      }
+    }
+
+    /* -------- ③ 回填 -------- */
+    rows.forEach((r, i) => {
+      const item = items[i];
+      if (!item) return;
+      const cn = String(r.consult_no ?? '').trim();
+      const origin = String(r.origin_student_id ?? '').trim();
+      const no = String(r.student_no ?? '').trim();
+      const sid = keyToId.get(cn) || keyToId.get(origin) || keyToId.get(no) || '';
+      const list = sid ? ordersByStudent.get(sid) || [] : [];
+      item.consultNoText = list.length ? list[list.length - 1] : '';
+      item.consultNoTip = list.join('、');
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[class/consult] 补咨询收款单号失败（不影响列表）', err);
+  }
+}
 
 const listSchema = z.object({
   ...pageQuerySchema.shape,
@@ -231,13 +335,43 @@ consultRouter.get(
       base.whereIn('intend_class_id', user.classIds.length ? user.classIds : ['__no_class__']);
     }
     if (query.applyStatus) base.where('apply_status', query.applyStatus);
-    if (query.keyword) base.where('student_name', 'like', `%${query.keyword}%`);
+    /**
+     * ★ 2026-10-27：搜索口径与输入框提示对齐
+     *   placeholder 一直写着「搜索姓名 / 学号 / 咨询单号」，但代码只 like 了 student_name。
+     *   现在：姓名、学号、consult_no（粘 UUID 也能查），
+     *   外加上「咨询收款单号」反查 —— 列表这一列显示的就是 SK… 单号，
+     *   搜它自然要能命中。
+     */
+    if (query.keyword) {
+      const kw = `%${query.keyword}%`;
+      let idsByOrderNo: string[] = [];
+      try {
+        const hits = (await db('t_consult_fee_order')
+          .withSchema('sms_consult')
+          .where('order_no', 'like', kw)
+          .where({ is_deleted: false })
+          .select('consult_student_id')
+          .limit(200)) as Array<Record<string, unknown>>;
+        idsByOrderNo = [...new Set(hits.map((h) => String(h.consult_student_id)).filter(Boolean))];
+      } catch {
+        /* 咨询库不可达 → 退化成只按姓名/学号/键值搜 */
+      }
+      base.where((w: any) => {
+        w.where('student_name', 'like', kw)
+          .orWhere('student_no', 'like', kw)
+          .orWhere('consult_no', 'like', kw);
+        if (idsByOrderNo.length) {
+          w.orWhereIn('consult_no', idsByOrderNo).orWhereIn('origin_student_id', idsByOrderNo);
+        }
+      });
+    }
     base.orderBy('push_time', 'desc');
 
-    const paged = await paginate(base, query, async (qb) =>
-      (await qb as Array<Record<string, unknown>>).map((r) => toPushItem(r, user)),
-    );
-    return ok(res, pageData(paged.total, paged.page, paged.size, paged.list), '查询成功');
+    /* 先取原始行（要按 consult_no 反查收款单号），再拼视图 */
+    const rawPaged = await paginate(base, query, async (qb) => (await qb) as Array<Record<string, unknown>>);
+    const items = rawPaged.list.map((r) => toPushItem(r, user));
+    await fillConsultOrderNo(rawPaged.list, items);
+    return ok(res, pageData(rawPaged.total, rawPaged.page, rawPaged.size, items), '查询成功');
   }),
 );
 
@@ -258,7 +392,10 @@ consultRouter.get(
       | Record<string, unknown>
       | undefined;
     if (!row) throw Errors.param('咨询推送单不存在');
-    return ok(res, toPushItem(row, req.user!), '查询成功');
+    const item = toPushItem(row, req.user!);
+    /* ★ 2026-10-27 详情同样补「咨询收款单号」，与列表口径一致 */
+    await fillConsultOrderNo([row], [item]);
+    return ok(res, item, '查询成功');
   }),
 );
 

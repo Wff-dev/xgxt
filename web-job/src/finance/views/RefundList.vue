@@ -98,7 +98,7 @@
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="handleDetail(row)">详情</el-button>
             <el-button
-              v-if="row.canRefund"
+              v-if="row.canRefund && canPayRefund"
               link
               type="warning"
               size="small"
@@ -107,7 +107,7 @@
               确认出款
             </el-button>
             <el-button
-              v-if="row.canRefund"
+              v-if="row.canRefund && canPayRefund"
               link
               type="danger"
               size="small"
@@ -301,6 +301,11 @@ import {
   rejectRefund,
 } from '@/finance/api/finance';
 import { formatAmount, refundStatusTagType, dash } from '@/finance/utils/finance';
+// ★ 2026-10-26：与后端 finance:refund:pay 同口径 —— 只勾「查看」的职位不显示出款/驳回
+import { hasPerm } from '@/store/permission';
+
+/** 有没有「退费出款」操作权 */
+const canPayRefund = computed(() => hasPerm('finance:refund:pay'));
 
 /* ---------- 列表 ---------- */
 

@@ -132,11 +132,10 @@ function resolveModule(path: string): string {
 }
 
 /**
- * 资源名：取路径里最深的一个业务段
+ * 路径段 → 中文资源名
  *
- * 例：`/api/consult/student/123/follow` → 学员
- *     `/api/teaching/refund/approve`    → 退费
- *     `/api/finance/fee/plan/save`      → 缴费
+ * 只做「词 → 中文」的映射，具体取哪一段由下面的 resolveResource 决定
+ * （它会跳过 approve / reject 这类动作段，取真正的业务段再拼「审批」）。
  */
 const RESOURCE_NAME: Record<string, string> = {
   account: '账号',
@@ -183,14 +182,38 @@ const RESOURCE_NAME: Record<string, string> = {
   user: '账号',
 };
 
+/**
+ * 资源名：取路径里最深的一个业务段
+ *
+ * 例：`/api/consult/student/123/follow` → 学员
+ *     `/api/teaching/refund/approve`    → 退费审批
+ *     `/api/finance/fee/plan/save`      → 缴费
+ *
+ * ★ 2026-10-26：原来 `/api/teaching/refund/approve` 取最深段得到的是「审批」，
+ *   日志里写成「审批 #uuid」，既看不出审批的是什么，现在 UUID 去掉后更只剩「审批」两个字。
+ *   所以遇到 approve / reject 这类动作段时，要把它前面那个业务段带上 ——
+ *   → 「退费审批」「休退学审批」「咨询审批」。一眼就知道批的是哪类单据。
+ */
+const APPROVE_SEG = new Set(['approve', 'reject', 'audit', 'approval', 'pass', 'refuse']);
+
 function resolveResource(path: string): string {
-  const segs = path.split('/').filter(Boolean);
-  let name = '';
+  const segs = path
+    .split('/')
+    .filter(Boolean)
+    .map((s) => s.toLowerCase());
+
+  let biz = '';
+  let hasApprove = false;
   for (const seg of segs) {
-    const key = seg.toLowerCase();
-    if (RESOURCE_NAME[key]) name = RESOURCE_NAME[key];
+    if (APPROVE_SEG.has(seg)) {
+      hasApprove = true;
+      continue;
+    }
+    if (RESOURCE_NAME[seg]) biz = RESOURCE_NAME[seg];
   }
-  return name;
+
+  if (hasApprove) return biz ? `${biz}审批` : '审批';
+  return biz;
 }
 
 /** 路径里出现这些词 = 审批类动作（优先级最高，要压过「修改/新增」） */
@@ -305,10 +328,37 @@ function summarizeBody(body: any): string {
   return s.length > 900 ? s.slice(0, 900) + '…' : s;
 }
 
+/**
+ * 机器 ID（UUID / 长 hash）识别
+ *
+ * ⚠️ 2026-10-26 用户反馈（截图）：操作日志的「操作对象」列出现
+ *   `咨询 #4d4b4781-857c-43b4-999e-a57667a59cb9`
+ *   `班级 #5d06d652-b7df-45a9-9b2d-a9a61679eb66`
+ *   这种一串字母加连字符 —— 那是**数据库主键**，对使用者没有任何意义，
+ *   既读不出是哪条记录，也没法拿去搜索（换台机器就不同）。
+ *
+ *   根因就在下面这两个函数：`pickTargetId()` 从请求体里抓 id，
+ *   `buildTarget()` 无条件拼成 `资源 #id`。而当请求体里没有 name 类字段时
+ *   （`/api/teaching/class/change-status`、`/api/class/student/update`
+ *   `/api/teaching/refund/approve` … 都只传 id），界面上就只剩这串乱码。
+ *
+ *   现在：只保留「人类可读的业务编号」（#S001 / #FEE-26006-3 这类），
+ *   UUID 一律不进日志。真正想精确到某条记录时，由业务路由设 `req.auditTarget`
+ *   把中文名带上（见 buildTarget 下方说明）。
+ */
+const OPAQUE_ID =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|[0-9A-Za-z_-]{32,})$/i;
+
+/** 是不是一串不该出现在界面上的机器 ID */
+function isOpaqueId(v: string): boolean {
+  return OPAQUE_ID.test(String(v).trim());
+}
+
 /** 从请求体里挑「最能说明是哪条记录」的字段 */
 function pickTargetName(body: any): string {
   if (!body || typeof body !== 'object') return '';
   const keys = [
+    // 名称类
     'name',
     'studentName',
     'student_name',
@@ -320,12 +370,43 @@ function pickTargetName(body: any): string {
     'dept_name',
     'className',
     'class_name',
+    'examName',
+    'exam_name',
+    'courseName',
+    'course_name',
+    'itemName',
+    'item_name',
+    'batchName',
+    'batch_name',
+    'buildingName',
+    'building_name',
+    'roomName',
+    'room_name',
+    'dormName',
+    'dorm_name',
     'title',
     'account',
+    // ★ 2026-10-26 扩充：编号类字段同样是「人话」——
+    //   缴费单号、学员编号、考试批次等，比裸 UUID 有用得多
+    'no',
+    'code',
+    'orderNo',
+    'order_no',
+    'feeNo',
+    'fee_no',
+    'studentNo',
+    'student_no',
+    'examNo',
+    'exam_no',
   ];
   for (const k of keys) {
     const v = (body as any)[k];
-    if (typeof v === 'string' && v.trim()) return v.trim().slice(0, 40);
+    if (typeof v === 'string' && v.trim()) {
+      const s = v.trim();
+      // 字段本身也可能塞的是 ID，同样不能当名称用
+      if (isOpaqueId(s)) continue;
+      return s.slice(0, 40);
+    }
   }
   return '';
 }
@@ -340,12 +421,25 @@ function pickTargetId(body: any): string {
   return '';
 }
 
-/** 操作对象：`学员 #S001 张三` */
+/**
+ * 操作对象：`学员 #S001 张三`
+ *
+ * 组成规则（按顺序，能拿到几段拼几段）：
+ *   ① 资源名（如「班级」「退费」「学员」）
+ *   ② 业务编号 —— **仅当它不是 UUID/hash 时**才带 `#` 显示
+ *   ③ 中文名称
+ *
+ * 三段都没有时至少留资源名，绝不留空、也绝不出现主键。
+ * 想更精确（例如「班级 高中一班（高二）」），业务路由可以在写库前设
+ *   `(req as any).auditTarget = '班级 高中一班';`
+ * 中间件会优先采用（见下方 targetObj 的取值）。
+ */
 function buildTarget(path: string, body: any): string {
   const resource = resolveResource(path) || '接口';
   const id = pickTargetId(body);
   const name = pickTargetName(body);
-  return [resource, id ? `#${id}` : '', name].filter(Boolean).join(' ').slice(0, 120);
+  const bizNo = id && !isOpaqueId(id) ? `#${id}` : '';
+  return [resource, bizNo, name].filter(Boolean).join(' ').slice(0, 120);
 }
 
 /* ============================================================
@@ -653,9 +747,17 @@ export function auditLog(req: Request, res: Response, next: NextFunction): void 
 
       // ---- 请求体摘要 ----
       const summary = summarizeBody(req.body);
+      /**
+       * 操作对象
+       *
+       * ① 登录 → 固定「系统登录」
+       * ② 业务路由可用 `(req as any).auditTarget = '班级 高中一班'` 显式指定（最精确）
+       * ③ 否则按路径 + 请求体推导（**不会再输出 UUID**，见 buildTarget）
+       */
+      const explicitTarget = String((req as any).auditTarget || '').trim();
       const targetObj = isLogin
         ? '系统登录'
-        : buildTarget(path, req.body);
+        : (explicitTarget || buildTarget(path, req.body)).slice(0, 120);
 
       // ---- 变更前 / 后 ----
       //    ⚠️ 通用中间件拿不到「数据库里的旧值」（那需要每个接口自己查一次），

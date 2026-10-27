@@ -24,9 +24,12 @@ import { randomUUID } from 'crypto';
 import { BizCode, ExportScope, GENDER_NAME } from 'shared-types/perm';
 import { ok } from '../utils/response';
 import { db } from '../utils/db';
+import { orderRoles } from '../../utils/roleOrder';
 import { wrap } from '../utils/wrap';
 import { validate } from '../middleware/validate';
 import { checkPermission } from '../middleware/auth';
+// ★ 2026-10-26：导出同样不能把 `资源 #<UUID>` 带到 Excel 里
+import { sanitizeTargetObj } from '../utils/logTarget';
 import { BizError } from '../middleware/errorHandler';
 import { resolveLogRoleLabels } from '../services/perm.service';
 import {
@@ -92,14 +95,15 @@ async function fetchDept(page?: number, size?: number, all = false): Promise<She
 async function fetchRole(page?: number, size?: number, all = false): Promise<Sheet> {
   // ★ 2026-10-19：用户要求全系统去掉「职位编码」→ 导出表也不再带这一列
   // ★ 2026-10-20：同理去掉「职位类型」（界面上已无此列，导出也别带看不见的字段）
+  // ★ 2026-10-26：同理去掉「是否预置」（界面上已不区分预置/自建）
   const columns = [
-    '职位名称', '所属部门', '状态', '权限点数', '关联账号数', '是否预置', '描述',
+    '职位名称', '所属部门', '状态', '权限点数', '关联账号数', '描述',
   ];
   const query = db('t_perm_role').where('is_deleted', false);
   if (!all && page && size) query.limit(size).offset((page - 1) * size);
 
   const [rows, depts, userCounts] = await Promise.all([
-    query.clone().select('*').orderBy([{ column: 'is_sys', order: 'desc' }, { column: 'sort_no' }]),
+    orderRoles(query.clone().select('*')),
     db('t_perm_dept').where('is_deleted', false).select('id', 'dept_name'),
     db('t_perm_user_role').where('is_deleted', false).select('role_id').count({ n: '*' }).groupBy('role_id'),
   ]);
@@ -116,7 +120,6 @@ async function fetchRole(page?: number, size?: number, all = false): Promise<She
       状态: r.role_status,
       权限点数: Number(r.perm_count || 0),
       关联账号数: userMap.get(r.id) || 0,
-      是否预置: r.is_sys ? '是' : '否',
       描述: r.remark || '',
     })),
   };
@@ -176,9 +179,9 @@ async function fetchLog(
   all = false,
   filters: Record<string, any> = {},
 ): Promise<Sheet> {
-  const columns = [
-    '操作时间', '操作人', '职位', '所属模块', '操作类型', '操作对象', '操作前', '操作后', 'IP', '结果',
-  ];
+  // ★ 2026-10-26：按用户要求，导出文件的列与「操作日志」列表保持一致 ——
+  //   去掉「操作前 / 操作后 / IP」三列（IP 在整个系统里不再出现）。
+  const columns = ['操作时间', '操作人', '职位', '所属模块', '操作类型', '操作对象', '结果'];
   const query = db('t_perm_log').where('is_deleted', false);
 
   if (filters.moduleName) query.andWhere('module_name', filters.moduleName);
@@ -188,7 +191,7 @@ async function fetchLog(
     query.andWhere((qb: any) => {
       qb.where('operator_name', 'like', `%${filters.keyword}%`)
         .orWhere('target_obj', 'like', `%${filters.keyword}%`)
-        .orWhere('ip', 'like', `%${filters.keyword}%`);
+        .orWhere('operator_role', 'like', `%${filters.keyword}%`);
     });
   }
   if (filters.startDate) query.andWhere('log_time', '>=', `${filters.startDate} 00:00:00`);
@@ -210,10 +213,7 @@ async function fetchLog(
       职位: roleLabels[i] ?? r.operator_role ?? '',
       所属模块: r.module_name,
       操作类型: r.action_type,
-      操作对象: r.target_obj || '',
-      操作前: r.before_value || '',
-      操作后: r.after_value || '',
-      IP: r.ip || '',
+      操作对象: sanitizeTargetObj(r.target_obj),
       结果: r.result,
     })),
   };

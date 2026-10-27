@@ -26,6 +26,7 @@
 
 import { randomUUID } from 'crypto';
 import { db } from '../utils/db';
+import { orderRoles } from '../../utils/roleOrder';
 import { PAGE_REGISTRY, findRegistryBoard } from '../config/pageRegistry';
 import type {
   PermRolePagesResult,
@@ -121,7 +122,7 @@ interface RoleLite {
 
 /** 取全部职位（含部门名与启用态） */
 async function loadRoles(): Promise<RoleLite[]> {
-  const rows = await db('t_perm_role').where('is_deleted', false).orderBy('sort_no');
+  const rows = await orderRoles(db('t_perm_role').where('is_deleted', false));
   const depts = await db('t_perm_dept').where('is_deleted', false).select('id', 'dept_name');
   const deptMap = new Map((depts as any[]).map((d) => [d.id, d.dept_name]));
 

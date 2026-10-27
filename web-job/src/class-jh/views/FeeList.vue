@@ -8,8 +8,11 @@
  *   后端 /fee/share、/fee/notify/list 接口**保留但页面不再有入口**（将来接真实短信发送时复用；
  *   数据表 t_class_fee_notify 也照旧保留）。
  *
+ * ★ 2026-10-26 用户要求：列表 / 筛选 / 导出里的「应缴日期」统一改叫「到期日期」。
+ *   金额列「应缴金额」不动；字段仍是 expireDate，只改展示文案。
+ *
  * ★ 2026-10-25 用户要求：列表删掉「紧急」「催费次数」两列（筛选里的「仅看紧急」保留）；
- *   「剩余天数」三部门统一按「应缴日期 − 今天」计算（原来只有逾期行才有值，
+ *   「剩余天数」三部门统一按「到期日期 − 今天」计算（原来只有逾期行才有值，
  *   大学只下发 overdueDays、就业压根没有，用户看到的是一片「—」）。
  *
  * ★ 2026-10-21 用户要求：**大学 / 就业两个部门的功能与初高对齐**。
@@ -753,7 +756,7 @@ const EXPORT_HEADERS = [
   '实缴金额',
   '缴费方式',
   '缴费状态',
-  '应缴日期',
+  '到期日期',
   '缴费日期',
   '备注',
   '剩余天数',
@@ -825,7 +828,7 @@ async function collectRowsForExport(): Promise<FeeRow[]> {
     const list = await collectAllPages((page, size) => fetchFeeCallList({ ...deptQuery(), page, size }));
     out.push(...list.map((r) => callToRow(r)));
   }
-  // 「全部部门」按应缴日期倒序，与页面合并视图一致
+  // 「全部部门」按到期日期倒序，与页面合并视图一致
   out.sort((a, b) => (b.expireDate || '0000').localeCompare(a.expireDate || '0000'));
   return out;
 }
@@ -833,7 +836,7 @@ async function collectRowsForExport(): Promise<FeeRow[]> {
 async function handleExport() {
   try {
     const rows = await collectRowsForExport();
-    exportCsv('催费台账', EXPORT_HEADERS, rows.map(toExportRow));
+    exportCsv('缴费台账', EXPORT_HEADERS, rows.map(toExportRow));
     ElMessage.success('导出成功');
   } catch {
     /* 错误已统一处理 */
@@ -851,7 +854,7 @@ onMounted(() => {
     <el-card shadow="never" class="search-card">
       <!-- ★ 2026-10-19：筛选全部「选完即查」（@change → handleSearch），不用再点查询；选完不动，用户视角就是筛选没生效 -->
         <!-- ★ 2026-10-19（二次要求）：部门维度——列表加部门列，筛选加部门（初高/大学/就业）；
-             ★ 2026-10-20（三次要求）：三个筛选（缴费状态 / 仅看紧急 / 应缴日期）对全部部门生效，
+             ★ 2026-10-20（三次要求）：三个筛选（缴费状态 / 仅看紧急 / 到期日期）对全部部门生效，
                取消原来的按部门禁用；就业状态码与缴费状态不同，下拉按部门切换选项集 -->
       <el-form :model="query" inline>
         <el-form-item label="部门">
@@ -883,7 +886,7 @@ onMounted(() => {
         <el-form-item label="仅看紧急">
           <el-switch v-model="query.isUrgent" @change="handleSearch" />
         </el-form-item>
-        <el-form-item label="应缴日期">
+        <el-form-item label="到期日期">
           <el-date-picker v-model="query.startDate" type="date" value-format="YYYY-MM-DD" placeholder="开始" style="width: 140px" @change="handleSearch" />
           <span class="sep">~</span>
           <el-date-picker v-model="query.endDate" type="date" value-format="YYYY-MM-DD" placeholder="结束" style="width: 140px" @change="handleSearch" />
@@ -900,7 +903,7 @@ onMounted(() => {
           <el-button type="primary" plain :icon="Upload" @click="openTransfer">批量上传到财务</el-button>
         </el-form-item>
         <el-form-item>
-          <div class="dept-hint">注：缴费状态、仅看紧急、应缴日期对全部部门（初高/大学/就业）生效；缴费状态三部门统一（待缴/已缴/已核对/逾期/冻结），就业的催费单状态（待催缴/催缴中/已缴清）已折算为缴费状态；「紧急」= 未结清且已过应缴日（逾期一律算紧急）</div>
+          <div class="dept-hint">注：缴费状态、仅看紧急、到期日期对全部部门（初高/大学/就业）生效；缴费状态三部门统一（待缴/已缴/已核对/逾期/冻结），就业的催费单状态（待催缴/催缴中/已缴清）已折算为缴费状态；「紧急」= 未结清且已过到期日（逾期一律算紧急）</div>
         </el-form-item>
       </el-form>
     </el-card>
@@ -955,7 +958,7 @@ onMounted(() => {
         <el-table-column label="缴费方式" width="110" align="center">
           <template #default="{ row }">{{ dash(row.payMethodName) }}</template>
         </el-table-column>
-        <el-table-column label="应缴日期" width="120">
+        <el-table-column label="到期日期" width="120">
           <template #default="{ row }">{{ formatDate(row.expireDate) }}</template>
         </el-table-column>
         <el-table-column label="缴费日期" width="120">

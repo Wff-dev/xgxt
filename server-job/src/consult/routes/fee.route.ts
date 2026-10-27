@@ -96,6 +96,32 @@ function parseItemDetail(raw: any): Array<{ feeType: number; feeTypeName: string
   }
 }
 
+/**
+ * ★ 2026-10-27：把「学生当前档案」的班级/学号覆盖到收款单视图上
+ *
+ * 【修的是什么】
+ *   用户实测：学生分班后，「收款与缴费」列表里依旧显示「未分班」。
+ *   根因：`t_consult_fee_order.class_name / student_no` 是**建单那一刻的快照**，
+ *   分班（班主任接收建档 → internal receive-ack）只回写 `t_consult_student`，
+ *   历史单据一个字段都不会变 —— 于是分班前建的试学费单永远显示「未分班」。
+ *
+ * 【口径：学生档案优先】（与财务侧 2026-10-26「档案有的字段按档案走」一致）
+ *   · 班级：档案有值就用档案，档案为空才保留单据快照；
+ *   · 学号：只在「单据存的是 ZX 临时号 / 单据为空、档案已有正式号」时才覆盖
+ *     —— 单据学号是对账快照，已有正式号的历史单据不去动它。
+ */
+function applyCurrentStudent(
+  view: ConsultFeeOrder,
+  stu?: { className?: string | null; studentNo?: string | null } | null,
+): ConsultFeeOrder {
+  if (!stu) return view;
+  const cls = String(stu.className || '').trim();
+  if (cls) view.className = cls;
+  const no = String(stu.studentNo || '').trim();
+  if (no && (!view.studentNo || /^ZX/i.test(view.studentNo))) view.studentNo = no;
+  return view;
+}
+
 function toMergedOrderView(rows: any[], consultState?: number): ConsultFeeOrder {
   const first = rows[0];
   const main = toOrderView({ ...first, consult_state: consultState });
@@ -241,15 +267,26 @@ feeRouter.get(
     await attachPlanInfo(rows);
 
     // ★ 2026-10-09 补学生当前咨询状态（收款单是快照，学生状态会变）
+    // ★ 2026-10-27 同一个补查顺手把「当前班级 / 学号」也带出来 —— 分班后单据快照
+    //   不会更新，列表要以学生档案为准，否则分班了还显示「未分班」（用户实测反馈）
     const stuIds = Array.from(
       new Set(rows.map((r: any) => r.consult_student_id).filter(Boolean)),
     );
-    const stateMap = new Map<string, number>();
+    const studentMap = new Map<
+      string,
+      { consultState?: number; className?: string | null; studentNo?: string | null }
+    >();
     if (stuIds.length) {
       const stus: any[] = await db('t_consult_student')
         .whereIn('id', stuIds)
-        .select('id', 'consult_state');
-      for (const s of stus) stateMap.set(s.id, s.consult_state);
+        .select('id', 'consult_state', 'class_name', 'student_no');
+      for (const s of stus) {
+        studentMap.set(s.id, {
+          consultState: s.consult_state,
+          className: s.class_name,
+          studentNo: s.student_no,
+        });
+      }
     }
 
     /* ---------- ④ 到账操作人 / 到账时间（财务侧确认信息）---------- */
@@ -285,9 +322,10 @@ feeRouter.get(
       .map((k) => {
         const group = byKey.get(k);
         if (!group || !group.length) return null;
-        const view = toMergedOrderView(
-          group,
-          stateMap.get(group[0].consult_student_id),
+        const stu = studentMap.get(group[0].consult_student_id);
+        const view = applyCurrentStudent(
+          toMergedOrderView(group, stu?.consultState),
+          stu,
         );
         // 合并行里任何一笔被财务确认过，就把操作人/时间带出来
         for (const r of group) {
@@ -332,7 +370,27 @@ feeRouter.get(
     const { id } = (req as any).validated as { id: string };
     const row = await db(FEE_ORDER_TABLE).where({ id, is_deleted: false }).first();
     if (!row) throw new BizError(BizCode.ORDER_NOT_FOUND, '收款单不存在');
-    res.json(ok(toOrderView(row)));
+    /* ★ 2026-10-27 详情同样以学生档案为准（否则弹窗里也写着「未分班」） */
+    const stu = row.consult_student_id
+      ? await db('t_consult_student')
+          .where({ id: row.consult_student_id })
+          .select('consult_state', 'class_name', 'student_no')
+          .first()
+      : null;
+    res.json(
+      ok(
+        applyCurrentStudent(
+          toOrderView({ ...row, consult_state: (stu as any)?.consult_state }),
+          // ⚠️ 这里要转成驼峰：DB 行是 class_name / student_no，helper 收的是 className / studentNo
+          stu
+            ? {
+                className: (stu as any).class_name,
+                studentNo: (stu as any).student_no,
+              }
+            : null,
+        ),
+      ),
+    );
   }),
 );
 

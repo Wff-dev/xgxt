@@ -928,7 +928,7 @@ function onDetailClosed(): void {
               <el-empty v-else-if="!feeLoading" description="暂无数据" :image-size="80" />
             </div>
             <div class="tab-tip">
-              缴费数据来自<b>财务管理 · 缴费管理</b>；催缴记录请到<b>催费管理</b>页查看。
+              缴费数据来自<b>财务管理 · 缴费管理</b>；催缴记录请到<b>缴费管理</b>页查看。
             </div>
           </el-tab-pane>
         </el-tabs>

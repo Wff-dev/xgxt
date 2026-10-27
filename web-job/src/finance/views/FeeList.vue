@@ -112,8 +112,10 @@
             待核对 <b>{{ stat.waitVerify }}</b> · 已缴 <b>{{ stat.verified }}</b> · 已打回
             <b>{{ stat.rejected }}</b> · 已选 <b>{{ selectedRows.length }}</b> 人
           </span>
-          <!-- 财务的核心动作：批量核对（原型主按钮） -->
+          <!-- 财务的核心动作：批量核对（原型主按钮）
+               ★ 2026-10-26：只勾了「查看缴费」的职位不显示（否则点了 403） -->
           <el-button
+            v-if="canVerifyFee"
             type="primary"
             :disabled="selectedRows.length === 0"
             @click="handleBatchVerify"
@@ -250,7 +252,7 @@
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="handleDetail(row)">详情</el-button>
             <el-button
-              v-if="row.canVerify"
+              v-if="canVerifyFee && row.canVerify"
               link
               type="primary"
               size="small"
@@ -259,7 +261,7 @@
               核对
             </el-button>
             <el-button
-              v-if="row.canVerify"
+              v-if="canVerifyFee && row.canVerify"
               link
               type="warning"
               size="small"
@@ -294,7 +296,7 @@
     <FeeDetailDialog v-model="detailVisible" :fee="detail">
       <template #footer-actions="{ detail: d }">
         <el-button
-          v-if="d?.canVerify"
+          v-if="canVerifyFee && d?.canVerify"
           type="success"
           @click="detailVisible = false; handleVerify(d)"
         >
@@ -380,6 +382,17 @@ import {
 } from '@/finance/api/finance';
 import { formatAmount, payStatusTagType, dash } from '@/finance/utils/finance';
 import FeeDetailDialog from '@/finance/components/FeeDetailDialog.vue';
+// ★ 2026-10-26：按钮级判权接到「职位权限分配」——只勾了「查看缴费」的职位
+//   不该看到「批量财务核对 / 核对 / 打回」，否则点了才吃 403 红字。
+import { hasPerm } from '@/store/permission';
+
+/**
+ * 有没有「核对缴费单」的操作权（= 权限树里 finance:fee:verify）
+ *
+ * 后端 POST /api/finance/fee/verify 与 /batch-verify 都挂了这个码，
+ * 所以前端显隐与接口判权同一口径：树里勾了才显示，取消勾选立刻消失。
+ */
+const canVerifyFee = computed(() => hasPerm('finance:fee:verify'));
 
 /* ---------- 列表 ---------- */
 
@@ -636,7 +649,8 @@ function handleSelectionChange(rows: FeeListItem[]) {
 
 /** 只有 canVerify 的行才能勾选（批量核对的前提） */
 function isSelectable(row: FeeListItem): boolean {
-  return row.canVerify;
+  // ★ 2026-10-26：没有「核对」操作权的职位不能勾选（勾了也没法批量核对）
+  return canVerifyFee.value && row.canVerify;
 }
 
 /** 来源模块标签颜色：咨询蓝 / 教务绿 / 财务自建灰 */

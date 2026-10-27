@@ -99,18 +99,26 @@ export function errorHandler(
   res.status(200).json(body);
 }
 
-/** 把 MySQL 的错误码翻译成中文提示 */
-function translateDbError(err: any): string | null {
+/** 把 MySQL 的错误码翻译成中文提示（导出仅为单测用：server-job/tools/verify-db-error-hint.mjs） */
+export function translateDbError(err: any): string | null {
   if (!err || !err.code) return null;
 
   /* ★ 2026-10-19：P8 之后教学域老表已 DROP，这条报错的真正常见原因不再是
        「没跑迁移」，而是「某处仓储漏切读、还在查老表」。把表名带出来，
-       排查时一眼能定位到是哪个域。 */
+       排查时一眼能定位到是哪个域。
+
+     ★ 2026-10-26：光说「应走 t_uni_*」也会把人带偏 —— 实测最常见的其实是
+       **本地库比代码旧**（队友加了表只写 sql/init、没写 knex 迁移，
+       见根目录《数据库变更约定.md》复盘）。所以先把自检命令顶到最前面，
+       三种可能按「查一次就能分辨」的顺序写清楚。 */
   if (err.code === 'ER_NO_SUCH_TABLE') {
     const table = /Table '([^']+)' doesn't exist/i.exec(String(err.sqlMessage || err.message || ''))?.[1];
     return (
       `数据表不存在${table ? `：${table}` : ''} —— ` +
-      '教学域老表已 DROP，请检查是否有代码漏切读（应走 t_uni_*）；若确实是统一表缺失，再执行 npm run migrate'
+      '先跑 `cd server-job && npm run db:schema-diff` 分辨是哪种：' +
+      '① 自检报「库里缺」→ 本地库比代码旧，按《数据库变更约定.md》补表补列（npm run migrate 补不出这类表）；' +
+      '② 自检库里齐全 → 代码还在读已废弃的老表，应改走 t_uni_*；' +
+      '③ 报的库名与预期不符 → 跨库 SQL 漏写库名前缀（要写成 sms_xxx.t_yyy）'
     );
   }
 

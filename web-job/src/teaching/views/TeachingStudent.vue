@@ -765,7 +765,7 @@
                （口径：宿舍只从「宿舍管理」写入，新增学生时可一并指定班级名下的宿舍）
                楼栋号 → 宿舍号 → 床位号 三级联动，宿舍号展示为「楼栋-房号」 -->
           <el-col :span="8">
-            <el-form-item label="楼栋号">
+            <el-form-item label="楼栋号" required prop="dormBuilding">
               <el-input
                 v-if="form.id"
                 :model-value="dormBuildingText"
@@ -787,7 +787,7 @@
             </el-form-item>
           </el-col>
           <el-col :span="8">
-            <el-form-item label="宿舍号">
+            <el-form-item label="宿舍号" required prop="dormId">
               <el-input v-if="form.id" :model-value="form.dormNo || ''" placeholder="办理入住后自动带出" disabled />
               <el-select
                 v-else
@@ -804,7 +804,7 @@
             </el-form-item>
           </el-col>
           <el-col :span="8" v-if="showBed">
-            <el-form-item label="床位号">
+            <el-form-item label="床位号" required prop="bedNo">
               <el-input v-if="form.id" :model-value="formBedLabel" placeholder="办理入住后自动带出" disabled />
               <el-select
                 v-else
@@ -1295,6 +1295,40 @@ const rules: FormRules = {
         else cb(new Error('请选择班级（学号按班级编号生成）'));
       },
       trigger: 'submit',
+    },
+  ],
+  // ★ 2026-10-26：新增学生时楼栋号 / 宿舍号 / 床位号必填（编辑态只读、不强制）
+  dormBuilding: [
+    {
+      required: true,
+      validator: (_r, v: string, cb) => {
+        if (form.id) return cb();
+        if (v) cb();
+        else cb(new Error('请选择楼栋号'));
+      },
+      trigger: 'change',
+    },
+  ],
+  dormId: [
+    {
+      required: true,
+      validator: (_r, v: string, cb) => {
+        if (form.id) return cb();
+        if (v) cb();
+        else cb(new Error('请选择宿舍号'));
+      },
+      trigger: 'change',
+    },
+  ],
+  bedNo: [
+    {
+      required: true,
+      validator: (_r, v: string, cb) => {
+        if (form.id) return cb();
+        if (v) cb();
+        else cb(new Error('请选择床位号'));
+      },
+      trigger: 'change',
     },
   ],
   idCard: [

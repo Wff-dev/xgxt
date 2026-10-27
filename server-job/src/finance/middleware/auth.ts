@@ -23,11 +23,13 @@ import { Request, Response, NextFunction } from 'express';
 import { BizCode, ApiResponse, RoleCode, DataScope, ModuleKey } from 'shared-types/finance';
 import { verifyToken, looksLikeJwt } from '../utils/jwt';
 import { resolveBusinessRoles, resolveBusinessProfile } from '../../middleware/auth';
-// ★ 2026-10-07：接口级打通 —— 把「职位权限分配」的显式改动叠加到 FIN_ROLE_OPERATIONS 上
+// ★ 2026-10-07：接口级打通 —— 把「职位权限分配」的显式改动叠加到静态兜底上
 import {
   preloadRoleActionOverrides,
   resolveActionWithOverlay,
 } from '../../utils/roleActionOverlay';
+// ★ 2026-10-27（方案 B）：静态兜底基准改读中央表（含 FIN_STAFF 全量 + 校长全量）
+import { getUserOperationPermissionsBase } from '../../utils/pagePermissionSource';
 
 /** 把用户信息挂到 req 上，方便路由里用 */
 export interface AuthUser {
@@ -185,34 +187,29 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
  * ============================================================ */
 
 /* ============================================================
- * ★★ 2026-10-06 修复：财务模块的「角色 → 操作权限」兜底
+ * 「角色 → 操作权限」兜底：★ 2026-10-27 已改为读**中央表**
  *
- * 【原来错在哪】
- *   门户签发的 token 里 `permissions` 只有【模块级】粒度
- *   （module_owner 拿到的是 ['module:finance']），一条 `finance:*` 都没有。
- *   而本模块的 checkPermission('finance:fee:add') 要求功能点级权限 →
- *   **除了 admin（permissions=['*']），任何人都点不动「新增收费单」**：
- *   财务负责人 zhoum / 财务专员 liukj 打开财务页面，所有写操作 403。
+ * 【历史】
+ *   2026-10-06：门户 token 只有模块级权限（module_owner = ['module:finance']），
+ *     本模块 checkPermission('finance:fee:add') 要功能点级 →
+ *     除了 admin（permissions=['*']），谁点写操作都 403。
+ *     当时在**本文件内**建了私有表 FIN_ROLE_OPERATIONS 兜底（FIN_STAFF / SYS_ADMIN）。
  *
- * 【修法】与本模块同源的「权限管理模块」一样 —— 本模块自己按登录名
- *   回查业务角色（sms_perm），再用下面的角色兜底表补出操作权限点。
- *   只在「token 权限不够」时才查一次，读接口零额外开销。
+ * 【2026-10-27 为什么搬走（方案 B）】
+ *   私有表只认 FIN_STAFF，校长（RM_PRINCIPAL）不在里面。而校长在权限树里
+ *   146 个点全勾、6 个财务页面全可见、读接口全通，看起来"有权限"，
+ *   偏偏 16 个写接口一律 40302 —— 用户报的「校长没有财务权限」就是它。
  *
- * ⚠️ 角色码来自 sms_perm.t_perm_role.role_code（FIN_STAFF = 财务）。
+ *   给私有表加一行也能修，但那是第二次踩同一个坑（就业模块 2026-10-08 已踩过一次：
+ *   校长没有休学/退学权限，当时是把 job:* 全量补进中央表解决的）。
+ *   所以这里改成：**静态基准统一取 `pagePermissionSource.ts` 的中央表**
+ *   ROLE_OPERATION_PERMISSIONS（已含 FIN_STAFF 全量 + 校长全量），
+ *   本文件不再维护第二份角色-操作码清单。
+ *
+ *   职责边界保持不变：
+ *     · 中央表 = 静态兜底（该角色"默认"能干这些）
+ *     · 权限树 overlay = 管理员在「职位权限分配」里的显式增删（优先于兜底）
  * ============================================================ */
-const FIN_ROLE_OPERATIONS: Record<string, string[]> = {
-  // 财务（负责人 / 专员）：缴费全流程 + 退费出款 + 冻结 + 费用标准
-  FIN_STAFF: [
-    'finance:fee:add', 'finance:fee:verify', 'finance:fee:delete',
-    'finance:refund:apply', 'finance:refund:pay',
-    'finance:freeze:manage', 'finance:standard:manage',
-    // 财务侧的学员档案维护（routes/student.route.ts 用的就是这三个码）
-    'consult:student:add', 'consult:student:edit', 'consult:student:delete',
-  ],
-  // 系统管理员：通配（仍受门户只读总闸约束）
-  SYS_ADMIN: ['*'],
-};
-
 /** 门户级角色码 —— 只有这些说明 token 里没有业务角色，需要回查 */
 const PORTAL_ONLY_ROLES = new Set(['SYS_ADMIN', 'SYS_STAFF', 'ROLE_SERVICE']);
 
@@ -257,13 +254,16 @@ export function checkPermission(permissionCode: string) {
     // ★ 角色兜底：token 权限是模块级粗粒度，按业务角色补齐功能点权限
     //   ★ 2026-10-07：再叠加「职位权限分配」里的**显式改动**
     //     （撤销 → 403；新增 → 放行）。未被改动过的码行为与从前**完全一致**。
+    //   ★ 2026-10-27（方案 B）：静态基准改读中央表 ROLE_OPERATION_PERMISSIONS，
+    //     本模块不再维护私有的 FIN_ROLE_OPERATIONS —— 否则校长这类
+    //     「权限树勾满、但不在私有表里」的角色会全线 40302。
     try {
       const roles = await ensureBusinessRoles(user);
       await preloadRoleActionOverrides();
-      const allowed = resolveActionWithOverlay(roles, permissionCode, (role) => {
-        const own = FIN_ROLE_OPERATIONS[role] || [];
-        return own.includes('*') || own.includes(permissionCode);
-      });
+      const baseCodes = getUserOperationPermissionsBase(roles);
+      const staticAllow = (): boolean =>
+        baseCodes.includes('*') || baseCodes.includes(permissionCode);
+      const allowed = resolveActionWithOverlay(roles, permissionCode, staticAllow);
       if (allowed) {
         next();
         return;

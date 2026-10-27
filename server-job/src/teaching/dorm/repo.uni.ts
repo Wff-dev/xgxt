@@ -803,6 +803,7 @@ const STAGE_CLASS_TABLE: Record<TeachingStage, string> = {
           building,
           room,
           dormNo: str(r.dorm_no) || fallbackNo,
+          gender: Number(r.dorm_gender ?? 0),
           bedCount: Number(r.bed_count ?? list.length),
           occupiedCount: list.filter((b) => Number(b.bed_status) === 2).length,
           beds: list.map((b) => ({

@@ -107,7 +107,7 @@
         <el-table-column label="操作" width="130" fixed="right" align="center">
           <template #default="{ row }">
             <el-button
-              v-if="row.isFrozen"
+              v-if="row.isFrozen && canManageFreeze"
               link
               type="primary"
               size="small"
@@ -194,6 +194,11 @@ import {
   restDaysText,
   dash,
 } from '@/finance/utils/finance';
+// ★ 2026-10-26：与后端 finance:freeze:manage 同口径 —— 只勾「查看」的职位不显示「解冻」
+import { hasPerm } from '@/store/permission';
+
+/** 有没有「冻结/解冻」操作权 */
+const canManageFreeze = computed(() => hasPerm('finance:freeze:manage'));
 
 const loading = ref(false);
 const tableData = ref<FreezeListItem[]>([]);

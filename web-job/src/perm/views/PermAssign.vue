@@ -6,7 +6,7 @@
  *   · 页面主体        → 原型第 2570~2631 行 renderAssign()
  *   · 权限树弹窗      → 原型第 1116~1307 行 openPermTree / renderPermTree / treeSave
  *   · 复制权限        → 原型第 2632~2658 行 copyPermFrom / doCopyPerm
- *   · 重置为预置      → 原型第 2659~2671 行 resetRolePerm
+ *   · 全量勾选可见页面  → 原型第 2659~2671 行 resetRolePerm（原「重置为预置」）
  *
  * ⚠️ 样式不写在这里：原型的 <style> 已整体移植到 src/styles/prototype.css 并在
  *    main.ts 全局引入，所以这里只产出与原型【同名同层级】的 DOM。
@@ -32,33 +32,16 @@ import ProtoDialog from '@/perm/components/ProtoDialog.vue';
 import ProtoConfirm from '@/perm/components/ProtoConfirm.vue';
 import PermItemDialog from '@/perm/components/PermItemDialog.vue';
 import { toast } from '@/perm/utils/toast';
+import { roleIconOf } from '@/perm/utils/roleIcon';
 
 /* ============================================================
  * 0. 原型常量 / 小工具
  * ============================================================ */
 
-/** 原型 ROLE_ICON（第 850~851 行） */
-const ROLE_ICON: Record<string, string> = {
-  R01: '📞',
-  R02: '📈',
-  R03: '🧑‍🏫',
-  R04: '👨‍🏫',
-  R05: '🧑‍💼',
-  R06: '📊',
-  R07: '🎓',
-  R08: '🗂️',
-  R09: '💰',
-  R10: '💼',
-  R11: '📁',
-  R12: '👑',
-  R13: '🔧',
-  /* R14 已删除（2026-10-02 去掉「实训班主任」职位），断号不再复用 */
-  R15: '📋',
-};
-
-function roleIcon(id: string): string {
-  return ROLE_ICON[id] || '👤';
-}
+/* ★ 2026-10-26：原来这里抄了一份原型的 ROLE_ICON（键是 R01~R15 短码），
+ *   但开发版职位 id 是 UUID，`ROLE_ICON[id]` 永远查不到 → 本页所有职位图标
+ *   都退化成同一个 👤。改为与「职位管理」共用 @/perm/utils/roleIcon（按 roleCode 映射）。 */
+const roleIcon = roleIconOf;
 
 /** 极简 HTML 转义（职位名 / 功能点名会进 v-html 的标题与明细） */
 function esc(s: string): string {
@@ -106,7 +89,7 @@ const saving = ref(false);
  *
  *   perm:职位权限分配:editPerm     → 编辑该职位权限 / ＋ 配置权限
  *   perm:职位权限分配:copy         → 从其他职位复制
- *   perm:职位权限分配:resetPrefab  → 重置为预置
+ *   perm:职位权限分配:resetPrefab  → 全量勾选可见页面
  *   perm:职位权限分配:addItem      → ＋ 新增权限
  *
  * 口径：系统管理员恒有（store 里给通配 perm:*）；其余职位看管理员勾了什么。
@@ -753,7 +736,7 @@ async function doCopy(): Promise<void> {
 }
 
 /* ============================================================
- * 6. 重置为预置（原型 resetRolePerm）
+ * 6. 全量勾选可见页面（原型 resetRolePerm）
  * ============================================================ */
 
 const resetOpen = ref(false);
@@ -770,7 +753,7 @@ async function doReset(): Promise<void> {
   const name = currentRoleName.value;
   try {
     await assignApi.reset(currentRoleId.value, 'full');
-    toast(`已重置「${name}」的权限`, 'warn');
+    toast(`已把「${name}」可见页面里的动作全部勾上`, 'warn');
     await refresh();
   } catch {
     /* 已提示 */
@@ -792,11 +775,13 @@ async function doReset(): Promise<void> {
       <div class="card-h">
         <div class="t"><span class="bar"></span>职位权限分配</div>
         <div class="r">
-          <span class="desc">左侧选择职位 → 右侧勾选权限 → 保存生效</span>
+          <!-- ★ 2026-10-26：按钮变多后这行说明在 1520 宽下被挤成两行；
+               缩短文案并禁止换行，保持工具条单行 -->
+          <span class="desc" style="white-space: nowrap">选职位 → 勾权限 → 保存</span>
           <button class="btn" type="button" @click="openTree('view')">全屏查看</button>
           <!-- ⭐ 2026-10-22：以下三个按钮按「职位权限分配」页被勾选的动作显隐 -->
           <button v-if="canResetPrefab" class="btn" type="button" @click="resetOpen = true">
-            重置为预置
+            全量勾选可见页面
           </button>
           <button v-if="canAddItem" class="btn wn" type="button" @click="itemAdminOpen = true">
             ＋ 新增权限
@@ -828,7 +813,7 @@ async function doReset(): Promise<void> {
                 :class="{ on: r.id === currentRoleId }"
                 @click="selectRole(r.id)"
               >
-                <span>{{ roleIcon(r.id) }} {{ r.roleName }}</span><span class="cnt">{{ r.permCount }}</span>
+                <span>{{ roleIcon(r) }} {{ r.roleName }}</span><span class="cnt">{{ r.permCount }}</span>
               </div>
             </template>
           </div>
@@ -857,13 +842,11 @@ async function doReset(): Promise<void> {
                     font-size: 17px;
                   "
                 >
-                  {{ roleIcon(currentRole.id) }}
+                  {{ roleIcon(currentRole) }}
                 </div>
                 <div>
                   <div style="font-weight: 600; font-size: 14px">
                     {{ currentRole.roleName }}
-                    <span v-if="currentRole.isSys" class="tag p">预置</span>
-                    <span v-else class="tag g">自建</span>
                   </div>
                   <div class="desc">{{ currentRole.deptName }} · 关联账号 {{ userCount }} 人</div>
                 </div>
@@ -883,7 +866,7 @@ async function doReset(): Promise<void> {
                   从其他职位复制
                 </button>
                 <!-- ★ 2026-10-20 按用户要求删掉这里的「查看账号」按钮；
-                     同轮删掉「＋ 新增权限」：本页顶部工具条（重置为预置 / ＋ 新增权限 / 编辑该职位权限）已有入口，
+                     同轮删掉「＋ 新增权限」：本页顶部工具条（全量勾选可见页面 / ＋ 新增权限 / 编辑该职位权限）已有入口，
                      这个位置离「配置权限」太近，容易点错成"加权限点"而不是"配权限"。 -->
                 <!-- ★ 2026-10-23：统计口径改为「本职位」。
                      原来写「共 5 个模块 / 146 个权限点」是**全系统**的总量，
@@ -1123,7 +1106,7 @@ async function doReset(): Promise<void> {
       <div class="notice w mb12">⚠<div>复制将<b>覆盖</b>目标职位当前的权限配置，请谨慎操作。</div></div>
       <div style="border: 1px solid var(--line); border-radius: 9px; padding: 9px; max-height: 320px; overflow-y: auto">
         <div v-for="r in copyCandidates" :key="r.id" class="rl-item" @click="pickCopySource(r.id)">
-          <span>{{ roleIcon(r.id) }} {{ r.roleName }}</span>
+          <span>{{ roleIcon(r) }} {{ r.roleName }}</span>
           <span class="cnt">{{ r.permCount }} 项权限</span>
         </div>
         <div v-if="!copyCandidates.length" class="empty">
@@ -1154,14 +1137,14 @@ async function doReset(): Promise<void> {
 
     <ProtoConfirm
       v-model="resetOpen"
-      title="重置为预置权限"
+      title="全量勾选可见页面"
       icon="↩"
       icon-bg="var(--warn-l)"
-      :msg="`确认将「${currentRoleName}」重置为系统预置权限？`"
-      desc="系统将按该职位的标准职责重新生成权限配置。"
+      :msg="`确认把「${currentRoleName}」在已授权页面里的全部动作都勾上？`"
+      desc="只在该职位<b>已经能看到的页面</b>范围内勾选，不会额外开放新页面。适合页面授权刚调整完、想把动作一次补全的场景。"
       :detail="resetDetail"
-      warn="当前自定义的权限调整将丢失，且无法撤销。"
-      ok-text="确认重置"
+      warn="勾选后该职位在这些页面里拥有全部操作权限（含删除、导出等）；原有的自定义调整会被覆盖且无法撤销。"
+      ok-text="确认勾选"
       ok-class="wn"
       @ok="doReset"
     />

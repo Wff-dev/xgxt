@@ -33,8 +33,8 @@
  * 严重等级：P0阻断 / P1严重 / P2一般 / P3 轻微（注意 P3 中间有空格）
  * BUG来源：用户反馈 / 内部测试 / 改造过程中新发现 / 遗留程序改造
  *
- * 负责人：默认写「王寒逸」（2026-10-22 用户约定的本机口径）。
- *   需要归属他人时用环境变量覆盖，不要改源码：
+ * 负责人：默认**不填**（留空），源码里不写死任何账号。
+ *   需要归属某人时用环境变量指定 open_id，不要改源码：
  *   BUG_OWNER_OPEN_ID=ou_xxx node tools/bug-record.mjs upsert <hash> --payload f.json
  */
 
@@ -46,10 +46,10 @@ import { join, resolve } from 'node:path';
 const BASE_TOKEN = 'KHPobyqjZaBiw5sri3XcHWORnub';
 const TABLE_ID = 'tblsOphac4l6EM6E';
 const PROJECT_RECORD_ID = 'recvxTFfo60NKZ'; // 所属项目 → 学管系统
-// 负责人默认 → 王寒逸（2026-10-22 用户明确要求：本机改动一律归王寒逸）。
-// 别的机器 / 别的同事若需归属他人，用环境变量覆盖，不要改这里：
+// 负责人默认留空：源码里不写死任何账号的 open_id。
+// 需要归属某人时用环境变量显式指定，不要改这里：
 //   BUG_OWNER_OPEN_ID=ou_xxx node tools/bug-record.mjs upsert ...
-const OWNER_OPEN_ID = process.env.BUG_OWNER_OPEN_ID || 'ou_c1820c66e8f80b2b71ae1bc6e6d51b2e'; // 王寒逸
+const OWNER_OPEN_ID = (process.env.BUG_OWNER_OPEN_ID || '').trim();
 
 const SEVERITY = ['P0阻断', 'P1严重', 'P2一般', 'P3 轻微'];
 const SOURCE = ['用户反馈', '内部测试', '改造过程中新发现', '遗留程序改造'];
@@ -160,7 +160,7 @@ function normalizePayload(hash, payload, defaultTime) {
   const time = cellText(payload['开始时间']).trim() || defaultTime;
   if (!time) throw new Error('缺少开始时间，且无法从 git 推断，请显式传 --time "YYYY-MM-DD HH:mm"');
 
-  return {
+  const fields = {
     'BUG标题': cellText(payload['BUG标题']).trim(),
     '复现步骤': steps,
     '预期结果': cellText(payload['预期结果']).trim(),
@@ -168,11 +168,13 @@ function normalizePayload(hash, payload, defaultTime) {
     'BUG来源': [source],
     'BUG状态': ['待验证'],
     '实际结果': ['待验收'],
-    '负责人': [{ id: OWNER_OPEN_ID }],
     '所属项目': [{ id: PROJECT_RECORD_ID }],
     '开始时间': time,
     '结束时间': time,
   };
+  // 负责人默认不填：只有显式传了 BUG_OWNER_OPEN_ID 才写这一格
+  if (OWNER_OPEN_ID) fields['负责人'] = [{ id: OWNER_OPEN_ID }];
+  return fields;
 }
 
 function createOne(fields) {

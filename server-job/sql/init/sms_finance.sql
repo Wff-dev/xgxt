@@ -106,6 +106,7 @@ CREATE TABLE `t_finance_bill` (
   `voucher_no` varchar(64) DEFAULT NULL COMMENT '凭证编号',
   `pay_method` int DEFAULT NULL COMMENT '支付方式 1现金2转账3微信4支付宝',
   `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `expire_date` date DEFAULT NULL COMMENT '★ 2026-10-26 到期日（餐费/住宿费/保险费按「缴费金额÷费用标准」算出；学费等无到期概念）',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_bill_no` (`bill_no`),
   KEY `idx_bill_student_id` (`student_id`),
@@ -150,6 +151,7 @@ CREATE TABLE `t_finance_fee` (
   `head_teacher_name` varchar(50) DEFAULT NULL COMMENT '班主任姓名',
   `fee_type` int NOT NULL COMMENT '缴费类型 1学费2住宿费3餐费4保险费5试学费',
   `amount` int NOT NULL COMMENT '金额（单位：分）',
+  `standard_amount` int DEFAULT NULL COMMENT '★ 2026-10-26 应缴金额（分）：实缴=amount，优惠=standard_amount-amount',
   `pay_status` int NOT NULL DEFAULT '1' COMMENT '缴费状态 1待缴2已缴3已核对4逾期5冻结',
   `pay_date` date DEFAULT NULL COMMENT '缴费日期',
   `expire_date` date DEFAULT NULL COMMENT '到期日期（临期名单查询用）',
@@ -366,7 +368,6 @@ UNLOCK TABLES;
 --
 -- Table structure for table `t_finance_setting`
 --
-
 -- ★ 2026-10-26 补：财务配置（催费提醒等 KV 表）
 --   来源：队友 2026-10-26 加的催费设置（`finance/services/urge.service.ts` 读 urgeAheadDays）。
 --   当时只留了建表脚本 `scripts/_migrate-finance-setting-20261026.mjs`，没写进 init SQL →

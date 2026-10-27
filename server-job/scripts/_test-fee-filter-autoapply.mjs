@@ -11,7 +11,7 @@
  *      都必须带 @change（关键字 input 用 @keyup.enter + @clear）——
  *      以后新增筛选项忘了接 @change，这里直接红；
  *   ② 各页都要过 Vite 编译（改动是纯模板属性，编译失败立刻暴露）；
- *   ③ 教学域只剩「催费」一页，菜单名与侧栏红点判据同步（改名不同步 → 红点不亮）。
+ *   ③ 教学域只剩「缴费」一页，菜单名与侧栏红点判据同步（改名不同步 → 红点不亮）。
  *
  * 【跑法】在 server-job 目录下（前端 5173 运行中）：
  *     node scripts/_test-fee-filter-autoapply.mjs
@@ -126,7 +126,7 @@ function unwired(section) {
       'utf8',
     );
     check(
-      '★ 教学域催费页只剩「催费」一页：不再有缴费页签、不再引用教务缴费总记录页',
+      '★ 教学域缴费页只剩一页：不再有页签、不再引用教务缴费总记录页',
       !hubSrc.includes('label="缴费"') &&
         !hubSrc.includes('el-tab-pane') &&
         !hubSrc.includes('PaymentList') &&
@@ -135,15 +135,27 @@ function unwired(section) {
     );
     const domCfgSrc = readFileSync(path.join(ROOT, 'web-job', 'src', 'teaching', 'domainConfig.ts'), 'utf8');
     check(
-      '★ 菜单名同步改成「催费」（不再叫「催费 / 缴费」）',
-      domCfgSrc.includes("title: '催费',") && !domCfgSrc.includes("title: '催费 / 缴费',"),
+      '★ 模块名 =「缴费」（2026-10-26 由「催费」改名）',
+      domCfgSrc.includes("title: '缴费',") &&
+        !domCfgSrc.includes("title: '催费',") &&
+        !domCfgSrc.includes("title: '催费 / 缴费',"),
     );
     const appSrc = readFileSync(path.join(ROOT, 'web-job', 'src', 'App.vue'), 'utf8');
     check(
       // 菜单名被红点按精确标题匹配，改名不同步这里 = 红点永远不亮
-      '★ 侧栏催费红点按新菜单名匹配（改名后红点仍会亮）',
-      appSrc.includes("child.title === '催费' && feeUrgeBadge.count > 0") &&
-        !appSrc.includes("child.title === '催费 / 缴费'"),
+      '★ 侧栏缴费红点按新菜单名匹配（改名后红点仍会亮）',
+      appSrc.includes("child.title === '缴费' && feeUrgeBadge.count > 0") &&
+        !appSrc.includes("child.title === '催费'"),
+    );
+    const pageRegSrc = readFileSync(
+      path.join(ROOT, 'server-job', 'src', 'perm', 'config', 'pageRegistry.ts'),
+      'utf8',
+    );
+    check(
+      '★ 页面管理台账与菜单同名：「缴费」',
+      pageRegSrc.includes("title: '缴费',") &&
+        pageRegSrc.includes("path: '/teaching/fee',") &&
+        !pageRegSrc.includes("title: '催费',"),
     );
 
     /* ---------- B. live：Vite 编译通过 ---------- */

@@ -106,7 +106,29 @@ export interface PermBoardDef {
  *     approve / reject），界面读起来一致；
  *   · 页面特有的操作（分配、领取、转正式、末班…）用语义化 camelCase。
  *
- * 清单来源：逐页核对页面源码里的按钮与接口（2026-10-22 全量核对）。
+ * 清单来源：逐页核对页面源码里的按钮与接口（2026-10-22 首次全量核对；
+ *          2026-10-26 二次核对：补宿舍管理四个页签的动作、删掉页面上已不存在的按钮）。
+ *
+ * 【★ 2026-10-26 二次核对改了什么】
+ *   · 宿舍管理 6 → 13 个动作：按「宿舍房间 / 分派宿舍 / 申请审批 / 楼栋设置」
+ *     四个页签拆细，补上「删除房间」「分配床位（入住）」「分派宿舍（按班级）」
+ *     「驳回调宿申请」「新增/编辑/删除楼栋」—— 这些按钮界面上早就有了，
+ *     权限分配里却勾不到（用户 2026-10-26 反馈的正是这一条）。
+ *   · 删掉 4 个「幽灵动作」（页面上早已没有对应按钮）：
+ *       查看完整手机号（consult）、导出学生 + 转正式（学生档案，转正已改由咨询侧发起）、
+ *       导出统计（数据统计页无导出按钮）、查看冻结明细（冻结名单页无明细）。
+ *   · 补上 6 个「有按钮没权限项」的动作：补缴学费、查看收款凭证（咨询）、
+ *       查看部门详情、分配职位、导出单条日志（权限管理）、标记已就业（学生档案）、
+ *       阶段方案设计 / 标记待就业·已就业（班级管理）、提交申请（退费、休学退学）。
+ *   · 名称与按钮文案对齐：编辑档案→完善档案、调换宿舍→编辑房间、
+ *     发起催费→登记缴费（上传凭证）、结业转就业→升就业/结业转就业。
+ *
+ *   现口径：5 板块 / 32 页面 / 161 个动作。
+ *
+ * 【★ 2026-10-26 三次核对：费用标准新增「催费设置」页签】
+ *   财务管理 / 费用标准 从 3 个动作 → 5 个动作（多出「查看催费名单」「保存催费设置」）。
+ *   ⚠️ 以后凡是页面里**加了页签 / 加了会写库的按钮**，都要回来补一个动作，
+ *      否则会出现「界面上有、职位权限分配里勾不到」的缺口（本次用户报的正是这一条）。
  * ============================================================ */
 
 const A = {
@@ -143,36 +165,34 @@ const A = {
 /** `板块key/页面key` → 该页面的操作清单 */
 const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
   /* ==================== 1. 工作台 ==================== */
-  'workbench/dashboard': [
-    A.view(),
-    A.act('todo', '处理待办', BASE.EDIT),
-  ],
+  'workbench/dashboard': [A.view(), A.act('todo', '处理待办', BASE.EDIT)],
 
   /* ==================== 2. 市场咨询 ==================== */
   'consult/student': [
     A.view(),
     A.add('新建学生', ['consult:student:add']),
-    A.edit('编辑档案', ['consult:student:edit']),
+    A.act('edit', '完善档案', BASE.EDIT, ['consult:student:edit']),
     A.act('assign', '分配咨询老师', BASE.EDIT, ['consult:preArrival:assign']),
     A.act('claim', '领取学生', BASE.EDIT, ['consult:preArrival:assign']),
     A.act('interview', '录入面试结果', BASE.ADD, ['consult:test:interview']),
     A.act('enroll', '分配班级', BASE.EDIT, ['consult:student:edit']),
     A.act('toFormal', '转正式', BASE.EDIT, ['consult:fee:formal']),
+    A.act('supplement', '补缴学费', BASE.ADD, ['consult:fee:trial', 'consult:fee:formal']),
     A.act('cancelNotEnrolled', '取消未报名', BASE.DEL, ['consult:preArrival:absent']),
     A.act('loss', '标记流失', BASE.EDIT, ['consult:student:edit']),
-    A.act('viewFullPhone', '查看完整手机号', BASE.VIEW, ['consult:student:fullPhone']),
     A.act('follow', '新增跟进记录', BASE.ADD, ['consult:follow:add']),
   ],
   'consult/fee': [
     A.view(),
-    A.act('createTrial', '录入试学费', BASE.ADD, ['consult:fee:trial']),
-    A.act('createFormal', '录入正式学费', BASE.ADD, ['consult:fee:formal']),
-    A.act('discount', '优惠减免', BASE.EDIT, ['consult:fee:discount']),
+    A.act('createTrial', '发起收费·试学费', BASE.ADD, ['consult:fee:trial']),
+    A.act('createFormal', '发起收费·正式学费', BASE.ADD, ['consult:fee:formal']),
+    A.act('discount', '优惠减免（改实收金额）', BASE.EDIT, ['consult:fee:discount']),
     A.act('supplement', '补费', BASE.ADD, ['consult:fee:trial', 'consult:fee:formal']),
     A.act('uploadVoucher', '上传缴费凭证', BASE.ADD, ['consult:fee:trial', 'consult:fee:formal']),
     A.act('resubmit', '重新提交', BASE.EDIT, ['consult:fee:trial', 'consult:fee:formal']),
     A.act('void', '作废收款单', BASE.DEL),
     A.act('viewPlan', '查看分期计划', BASE.VIEW),
+    A.act('viewVoucher', '查看收款凭证', BASE.VIEW),
   ],
   'consult/approve': [
     A.view(),
@@ -197,15 +217,14 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
   'finance/overview': [A.view(), A.act('drill', '下钻查看名单', BASE.VIEW)],
   'finance/fee': [
     A.view(),
-    A.act('verify', '财务核对', BASE.EDIT, ['finance:fee:verify']),
+    A.act('verify', '核对缴费单', BASE.EDIT, ['finance:fee:verify']),
     A.act('batchVerify', '批量财务核对', BASE.EDIT, ['finance:fee:verify']),
-    A.act('reject', '打回', BASE.APPROVE, ['finance:fee:verify']),
+    A.act('reject', '打回缴费单', BASE.APPROVE, ['finance:fee:verify']),
     A.act('viewVoucher', '查看缴费凭证', BASE.VIEW),
   ],
   'finance/freeze': [
     A.view(),
     A.act('unfreeze', '解冻', BASE.EDIT, ['finance:freeze:manage']),
-    A.act('detail', '查看冻结明细', BASE.VIEW),
   ],
   'finance/refund': [
     A.view(),
@@ -214,10 +233,21 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
     A.act('detail', '查看退费明细', BASE.VIEW),
   ],
   'finance/bill': [A.view(), A.act('viewVoucher', '查看凭证', BASE.VIEW)],
+  /*
+   * ★ 2026-10-26 补：费用标准页新增「催费设置」页签（提前天数 + 催费名单）
+   *
+   *   页面上多了内容，权限树却没跟着加动作 —— 管理员在「职位权限分配」里
+   *   根本勾不到「催费设置」，而财务账号进来却已经能看见、能改（页签写死显示）。
+   *   现在按页签拆成两个动作，与接口同码：
+   *     查看催费名单  → finance:urge:view   （GET 提前天数 / 名单）
+   *     保存催费设置  → finance:urge:manage （POST 提前天数）
+   */
   'finance/standard': [
     A.view(),
     A.add('新增标准', ['finance:standard:manage']),
     A.edit('修改金额', ['finance:standard:manage']),
+    A.act('urgeView', '查看催费名单', BASE.VIEW, ['finance:urge:view']),
+    A.act('urgeSet', '保存催费设置', BASE.EDIT, ['finance:urge:manage']),
   ],
 
   /* ==================== 4. 权限管理 ==================== */
@@ -231,6 +261,7 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
     A.add('新建部门', ['perm:部门管理:add']),
     A.edit('编辑部门', ['perm:部门管理:edit']),
     A.del('删除部门', ['perm:部门管理:del']),
+    A.act('detail', '查看部门详情', BASE.VIEW),
   ],
   'perm/role': [
     A.view(),
@@ -248,13 +279,14 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
     A.act('resetPwd', '重置密码', BASE.DEL, ['perm:账号管理:resetPwd']),
     A.act('toggleStatus', '停用/启用账号', BASE.DEL, ['perm:账号管理:edit']),
     A.act('import', '批量导入账号', BASE.ADD, ['perm:账号管理:import']),
+    A.act('assignRole', '分配职位', BASE.EDIT, ['perm:账号管理:edit']),
     A.export('导出账号', ['perm:账号管理:export']),
   ],
   'perm/assign': [
     A.view(),
     A.act('editPerm', '编辑职位权限', BASE.EDIT, ['perm:职位权限分配:editPerm']),
     A.act('copy', '从其他职位复制', BASE.EDIT, ['perm:职位权限分配:copy']),
-    A.act('resetPrefab', '重置为预置', BASE.EDIT, ['perm:职位权限分配:resetPrefab']),
+    A.act('resetPrefab', '全量勾选可见页面', BASE.EDIT, ['perm:职位权限分配:resetPrefab']),
     A.act('addItem', '新增权限点', BASE.ADD, ['perm:职位权限分配:addItem']),
   ],
   'perm/page': [
@@ -262,7 +294,11 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
     A.act('edit', '启用/停用页面', BASE.EDIT, ['perm:页面管理:edit']),
     A.act('restore', '恢复默认页面', BASE.EDIT, ['perm:页面管理:edit']),
   ],
-  'perm/log': [A.view(), A.export('导出日志', ['perm:操作日志:export'])],
+  'perm/log': [
+    A.view(),
+    A.export('导出日志', ['perm:操作日志:export']),
+    A.act('exportOne', '导出单条日志', BASE.EXPORT, ['perm:操作日志:export']),
+  ],
 
   /* ==================== 5. 教学管理（13 页） ==================== */
   'teach/student': [
@@ -270,19 +306,20 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
     A.add('新增学生', ['class:student:add']),
     A.edit('编辑学生', ['class:student:edit']),
     A.del('删除学生', ['class:student:delete']),
-    A.export('导出学生', ['class:student:export']),
     A.act('upgrade', '升实训/升云', BASE.EDIT, ['class:student:promote']),
-    A.act('toFormal', '转正式', BASE.EDIT, ['class:student:edit']),
     A.act('quit', '发起退学', BASE.EDIT, ['job:leave:apply']),
+    A.act('markEmployed', '标记已就业', BASE.EDIT, ['job:empArchive:edit']),
   ],
   'teach/class': [
     A.view(),
     A.add('新增班级', ['class:classInfo:add']),
     A.edit('编辑班级', ['class:classInfo:edit', 'job:class:edit']),
-    A.del('删除班级', ['class:classInfo:delete']),
+    A.del('删除班级', ['class:classInfo:delete', 'job:class:delete']),
     A.act('handover', '交接班主任/教员', BASE.EDIT, ['class:handover:add']),
+    A.act('scheme', '阶段方案设计', BASE.EDIT, ['class:setting:edit', 'classjh:setting:view']),
     A.act('promote', '阶段推进/升实训', BASE.EDIT, ['class:student:promote']),
-    A.act('graduate', '结业转就业', BASE.EDIT, ['job:class:graduate']),
+    A.act('graduate', '升就业/结业转就业', BASE.EDIT, ['job:class:graduate']),
+    A.act('employStatus', '标记待就业/已就业', BASE.EDIT, ['job:class:suspend', 'job:class:graduate']),
   ],
   'teach/consult': [
     A.view(),
@@ -307,26 +344,46 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
     A.edit('修改成绩', ['class:grade:edit', 'job:exam-score:edit']),
     A.act('promote', '升班/末班', BASE.EDIT, ['class:repeat:add', 'job:exam-score:repeat']),
   ],
+  /*
+   * ★ 2026-10-26 重写：宿舍管理是「一页四个页签」，权限动作按页签拆细
+   *
+   *   宿舍房间：新增房间 / 编辑房间 / 删除房间 / 床位（入住、退宿）/ 调宿·退宿申请
+   *   分派宿舍：按班级分派（allocate）
+   *   申请审批：通过 / 驳回
+   *   楼栋设置：新增楼栋 / 编辑楼栋 / 删除楼栋
+   *
+   *   旧版把「新增房间 / 分派宿舍」合成一个动作、没有「删除房间」「分配床位」
+   *   也没有「楼栋设置」三个动作 —— 界面上能点的按钮在权限分配里根本勾不到。
+   */
   'teach/dorm': [
     A.view(),
-    A.add('新增房间/分派宿舍', ['class:dorm:add', 'job:dorm:add']),
-    A.edit('调换宿舍', ['class:dorm:edit', 'job:dorm:edit']),
+    A.add('新增房间', ['class:dorm:add', 'job:dorm:add']),
+    A.edit('编辑房间', ['class:dorm:edit', 'job:dorm:edit']),
+    A.del('删除房间', ['class:dorm:edit', 'job:dorm:edit']),
+    A.act('bed', '分配床位（入住）', BASE.EDIT, ['class:dorm:edit', 'job:dorm:edit']),
+    A.act('checkout', '办理退宿', BASE.EDIT, ['class:dorm:edit', 'job:dorm:edit']),
     A.act('apply', '提交调宿/退宿申请', BASE.ADD, [
       'class:dormApply:add',
       'class:dorm:apply',
       'job:dorm:apply',
     ]),
+    A.act('allocate', '分派宿舍（按班级）', BASE.EDIT, ['class:dorm:edit', 'job:dorm:edit']),
     A.act('approve', '审批调宿申请', BASE.APPROVE, ['class:dormApply:approve', 'job:dorm:approve']),
-    A.act('checkout', '办理退宿', BASE.EDIT, ['class:dorm:edit']),
+    A.reject('驳回调宿申请', ['class:dormApply:approve', 'job:dorm:approve']),
+    A.act('buildAdd', '新增楼栋', BASE.ADD),
+    A.act('buildEdit', '编辑楼栋', BASE.EDIT),
+    A.act('buildDel', '删除楼栋', BASE.DEL),
   ],
   'teach/fee': [
     A.view(),
-    A.act('urge', '发起催费', BASE.ADD, ['class:fee:add', 'job:feeCall:add', 'job:feeCall:handle']),
+    A.act('urge', '登记缴费（上传凭证）', BASE.ADD, ['class:fee:add', 'job:feeCall:add']),
+    A.act('transferFinance', '批量转交财务', BASE.EDIT, ['job:feeCall:handle']),
     A.export('导出催费名单', ['class:fee:export']),
   ],
   'teach/refund': [
     A.view(),
     A.act('apply', '发起退费', BASE.ADD, ['class:refund:add', 'job:refund:apply']),
+    A.act('submit', '提交申请', BASE.EDIT, ['class:refund:edit', 'job:refund:apply']),
     A.act('approve', '审批通过', BASE.APPROVE, ['class:refund:approve', 'job:refund:approve']),
     A.reject('驳回退费', ['class:refund:approve', 'job:refund:approve']),
     A.act('withdraw', '撤回申请', BASE.EDIT, ['class:refund:edit']),
@@ -335,6 +392,7 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
   'teach/approval': [
     A.view(),
     A.act('apply', '发起休学/退学申请', BASE.ADD, ['job:leave:apply', 'class:flow:add']),
+    A.act('submit', '提交申请', BASE.EDIT, ['class:flow:add', 'job:leave:apply']),
     A.act('approve', '审批通过', BASE.APPROVE, ['job:leave:approve', 'class:flow:approve']),
     A.reject('驳回申请', ['job:leave:approve', 'class:flow:approve']),
     A.act('withdraw', '撤回申请', BASE.EDIT, ['class:flow:add']),
@@ -354,7 +412,6 @@ const PAGE_ACTIONS: Record<string, PermActionDef[]> = {
   ],
   'teach/statistics': [
     A.view(['job:statistics:view']),
-    A.export('导出统计', ['job:statistics:export']),
     A.act('setTarget', '设置 KPI 目标', BASE.EDIT),
   ],
 };

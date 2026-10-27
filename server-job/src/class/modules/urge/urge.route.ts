@@ -265,15 +265,31 @@ urgeRouter.get(
     });
 
     // 匹配本地催缴副本行（执行催收 / 登记缴费要拿行 id）
+    /**
+     * ★ 2026-10-26 双键匹配：财务账单的 studentId（`FSB-U26005`）与本地催缴副本的
+     *   student_id（`seed-ustu-05` / 学号）不是一套 id，只按 studentId 查 →
+     *   一条都匹配不上 → 行 id 退化成合成 id（`fin-xxx`）→ 点「上传缴费凭证」报「单不存在」。
+     */
     const stuIds = [...new Set(fin.rows.map((r) => r.studentId))].filter(Boolean);
+    const stuNos = [...new Set(fin.rows.map((r) => r.studentNo))].filter(Boolean);
     const syncMap = new Map<string, any>();
-    if (stuIds.length) {
-      const rows = (await notDeleted(SYNC()).whereIn('student_id', stuIds).select('*')) as any[];
-      for (const r of rows) syncMap.set(`${r.student_id}::${r.fee_type}`, r);
+    if (stuIds.length || stuNos.length) {
+      const rows = (await notDeleted(SYNC())
+        .where((b: any) => {
+          b.whereIn('student_id', stuIds.length ? stuIds : [''])
+            .orWhereIn('student_no', stuNos.length ? stuNos : ['']);
+        })
+        .select('*')) as any[];
+      for (const r of rows) {
+        syncMap.set(`${r.student_id}::${r.fee_type}`, r);
+        if (r.student_no) syncMap.set(`${r.student_no}::${r.fee_type}`, r);
+      }
     }
 
     let list = fin.rows.map((r) => {
-      const local = syncMap.get(`${r.studentId}::${r.feeType}`);
+      const local =
+        syncMap.get(`${r.studentId}::${r.feeType}`) ??
+        (r.studentNo ? syncMap.get(`${r.studentNo}::${r.feeType}`) : undefined);
       const payStatus = r.remainDays < 0 ? PayStatus.OVERDUE : PayStatus.UNPAID;
       const amount = Number(local?.amount ?? r.suggestAmount ?? 0);
       return {
@@ -309,9 +325,11 @@ urgeRouter.get(
      *   （姓名/学号/班级/部门/手机号/家长手机号/班主任）。
      *   财务账单上的这些是建单快照，学生换班改号后不会更新。
      */
-    const arch = await lookupStudentArchive(list.map((x: any) => x.studentId));
+    const arch = await lookupStudentArchive(
+      list.map((x: any) => ({ studentId: x.studentId, studentNo: x.studentNo })),
+    );
     list = list.map((x: any) => {
-      const a = arch[x.studentId];
+      const a = arch[x.studentId] ?? (x.studentNo ? arch[x.studentNo] : undefined);
       if (!a) return x;
       return {
         ...x,

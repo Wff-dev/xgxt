@@ -307,10 +307,15 @@ feeCallRouter.get(
     }
     const finKey = new Set(fin.rows.map((r) => `${r.studentId}::${r.feeType}`));
     const finStuIds = [...new Set(fin.rows.map((r) => r.studentId))].filter(Boolean);
+    const finStuNos = [...new Set(fin.rows.map((r) => r.studentNo))].filter(Boolean);
 
     const base = tbl(db, DB, TABLE, STAGE)
       .where('is_deleted', false)
-      .whereIn('student_id', finStuIds)
+      // ★ 2026-10-26 双键：财务 studentId（FSB-xxx）与本地 student_id 不是一套 id，学号兜底
+      .where((b: any) => {
+        b.whereIn('student_id', finStuIds.length ? finStuIds : [''])
+          .orWhereIn('student_no', finStuNos.length ? finStuNos : ['']);
+      })
       // 2 住宿费 / 3 餐费 / 4 保险费（只有这三类有到期概念）
       .whereIn('fee_type', [2, 3, 4]);
 
@@ -337,13 +342,16 @@ feeCallRouter.get(
 
     const localRows = (await base.select('*')) as any[];
     const localMap = new Map<string, any>();
-    for (const l of localRows) localMap.set(`${l.student_id}::${l.fee_type}`, l);
+    for (const l of localRows) {
+      localMap.set(`${l.student_id}::${l.fee_type}`, l);
+      if (l.student_no) localMap.set(`${l.student_no}::${l.fee_type}`, l);
+    }
 
     let list: any[] = [];
     for (const r of fin.rows) {
       const k = `${r.studentId}::${r.feeType}`;
       if (!finKey.has(k)) continue;
-      const l = localMap.get(k);
+      const l = localMap.get(k) ?? (r.studentNo ? localMap.get(`${r.studentNo}::${r.feeType}`) : undefined);
       if (l) {
         // 有本地行：以财务到期日为准，其余业务字段用本地的
         const merged = {
@@ -383,9 +391,11 @@ feeCallRouter.get(
     /**
      * ★ 2026-10-26 除费用信息外，其余字段以**学生档案**为准（与初高/大学一致）
      */
-    const arch = await lookupStudentArchive(list.map((x: any) => x.studentId));
+    const arch = await lookupStudentArchive(
+      list.map((x: any) => ({ studentId: x.studentId, studentNo: x.studentNo })),
+    );
     list = list.map((x: any) => {
-      const a = arch[x.studentId];
+      const a = arch[x.studentId] ?? (x.studentNo ? arch[x.studentNo] : undefined);
       if (!a) return x;
       return {
         ...x,

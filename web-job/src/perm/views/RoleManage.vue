@@ -8,7 +8,7 @@
  *   · 第 1599~1612 行 openRoleUsers()       —— 职位下人员弹窗
  *   · 第 1613~1625 行 removeRoleFromUser()  —— 移出职位确认
  *   · 第 1626~1640 行 toggleRole()          —— 停用 / 启用确认
- *   · 第 1641~1671 行 delRole()             —— 删除确认（预置不可删 / 有关联账号不可删）
+ *   · 第 1641~1671 行 delRole()             —— 删除确认（有关联账号不可删）
  *   · 第 1675~1740 行 openRoleForm()        —— 新建 / 编辑职位弹窗（基本信息 + 权限只读预览）
  *   · 第 1740~1783 行 permPreviewHtml / openFormPermTree / applyFormPerm
  *                     （2026-10-23 已删：表单内不再提供「＋ 配置权限」与「应用到表单」）
@@ -120,7 +120,7 @@ const roleIcon = roleIconOf;
 const loading = ref(false);
 const list = ref<PermRoleListItem[]>([]);
 const total = ref(0);
-/** KPI 数据：本页不展示 KPI，仅用于「预置职位共 N 个」这句文案 */
+/** 职位总览（预置/自建统计）。★ 2026-10-26：界面上不再区分预置，这里只保留数据备用，不参与渲染 */
 const overview = ref<RoleOverview | null>(null);
 
 const query = reactive({
@@ -626,25 +626,9 @@ async function doToggleRole(row: PermRoleListItem, toOn: boolean): Promise<void>
 function delRole(row: PermRoleListItem): void {
   const n = row.userCount || 0;
 
-  if (row.isSys) {
-    openConfirm(
-      {
-        title: '无法删除',
-        icon: '🚫',
-        iconBg: 'var(--dg-l)',
-        msg: '系统预置职位不可删除',
-        desc: `「${esc(row.roleName)}」是系统预置的 <b>${overview.value?.presetTotal ?? 0}</b> 个基础职位之一，只能停用，或到「职位权限分配」页调整它的权限。`,
-        tip: '如确认不再需要，可改为"停用"，效果等同但可随时恢复。',
-        okText: '改为停用该职位',
-        okClass: 'wn',
-      },
-      () => {
-        toggleRole(row);
-      },
-    );
-    return;
-  }
-
+  /* ★ 2026-10-26：不再区分「预置职位 / 自建职位」—— 用户要求把预置概念从系统里去掉，
+   *   预置职位同样可删。仍然保留「有关联账号不可删」这一条通用约束：
+   *   删掉有账号在用的职位会让这些账号失去权限依据（后端 ROLE_IN_USE 也会拦）。 */
   if (n > 0) {
     openConfirm(
       {
@@ -739,7 +723,7 @@ function removeRoleFromUser(u: PermUserListItem): void {
    * → 账号仍旧留在列表里，看起来就像「移出没生效」。
    *
    * 改法：唯一职位时【不给可执行按钮】，直接解释清楚 + 指个去处，
-   * 与 delRole() 里「系统预置职位不可删除 → 改为停用」是同一套写法。 */
+   * 与 delRole() 里「有关联账号不可删除 → 给不出可执行按钮」是同一套写法。 */
   if (!remainIds.length) {
     openConfirm(
       {
@@ -1259,7 +1243,6 @@ async function doExport(): Promise<void> {
                   <span class="lk" style="font-weight: 600" @click="openDetail(r)">
                     {{ roleIcon(r) }} {{ r.roleName }}
                   </span>
-                  <span v-if="r.isSys" class="tag n" style="margin-left: 4px">预置</span>
                 </td>
                 <td>{{ r.deptName || '—' }}</td>
                 <td class="num">{{ r.userCount }} 人</td>
@@ -1280,11 +1263,7 @@ async function doExport(): Promise<void> {
                       :class="r.roleStatus === '启用' ? 'wn' : 'gr'"
                       @click="toggleRole(r)"
                     >{{ r.roleStatus === '启用' ? '停用' : '启用' }}</span>
-                    <span
-                      class="lk"
-                      :class="r.isSys ? 'dis' : 'dg'"
-                      @click="r.isSys ? toast('系统预置职位不可删除', 'err') : delRole(r)"
-                    >删除</span>
+                    <span class="lk dg" @click="delRole(r)">删除</span>
                   </div>
                 </td>
               </tr>

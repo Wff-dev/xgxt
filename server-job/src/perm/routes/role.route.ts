@@ -19,7 +19,8 @@
  *    · t_perm_role 存职位本身
  *    · t_perm_role_perm 一行一个「已勾选动作」
  *    · perm_count 是冗余字段，保存权限后必须回填
- * ⚠️ 13 个系统预置职位（is_sys = true）不可删除，只能停用或改权限。
+ * ★ 2026-10-26：取消预置/自建的区分 —— 预置职位同样可以删除、可以改编码
+ *   （唯一的通用限制是「职位下还有账号在用」时不能删 / 不能改编码）。
  * ⚠️ 职位编码全局唯一（uk_role_code）。逻辑删除后需「释放编码」，
  *    否则同名编码无法重建（唯一索引不认 is_deleted）。
  * ★ 2026-10-19：界面已完全去掉「职位编码」（用户要求全系统不可见 / 不可填），
@@ -34,6 +35,7 @@ import { BizCode, RoleStatus, PermRoleDetail, RolePermMap } from 'shared-types/p
 import { RoleCode } from 'shared-types';
 import { ok, page } from '../utils/response';
 import { db } from '../utils/db';
+import { orderRoles, inferRoleSortNo } from '../../utils/roleOrder';
 import { wrap } from '../utils/wrap';
 import { validate } from '../middleware/validate';
 import { checkPermission } from '../middleware/auth';
@@ -136,7 +138,8 @@ async function buildRoleListItems(rows: any[]) {
       // ★ 2026-10-08：等价内置职位码（自建职位声明自己等价于谁）
       equivRoleCode: r.equiv_role_code || null,
       isSys: !!r.is_sys,
-      canDelete: !r.is_sys && userCount === 0,
+      // ★ 2026-10-26：不再区分预置/自建，只要没有账号在用就能删
+      canDelete: userCount === 0,
       roleStatus: r.role_status,
       // ★ 2026-10-23：有效动作数（页面已关闭的动作不计入），与详情/分配页一致
       permCount: effCounts.get(String(r.id)) ?? Number(r.perm_count || 0),
@@ -202,10 +205,7 @@ roleRouter.get(
     }
 
     const [{ total }] = await query.clone().count({ total: '*' });
-    const rows = await query
-      .clone()
-      .select('*')
-      .orderBy([{ column: 'is_sys', order: 'desc' }, { column: 'sort_no' }])
+    const rows = await orderRoles(query.clone().select('*'))
       .limit(q.size)
       .offset((q.page - 1) * q.size);
 
@@ -413,7 +413,9 @@ roleRouter.post(
       is_sys: false,
       role_status: body.roleStatus || RoleStatus.ENABLED,
       perm_count: 0,
-      sort_no: body.sortNo ?? 99,
+      // ★ 2026-10-26：名字里带学部的（如「班主任（大学部）」）沿用同族职位的 sort_no，
+      //   这样新加的学部副本会排进「初中 → 高中 → 大学」的正确位置，而不是掉到末尾
+      sort_no: body.sortNo ?? (await inferRoleSortNo(body.roleName)),
       remark: body.remark || null,
       is_deleted: false,
       create_time: new Date(),
@@ -468,9 +470,17 @@ roleRouter.put(
     }
     const nextCode = givenCode || exists.role_code;
 
-    // ⚠️ 预置职位的编码不可改（登录模块 token 里的 roles[] 依赖它）
-    if (exists.is_sys && nextCode !== exists.role_code) {
-      throw new BizError(BizCode.PRESET_ROLE_PROTECTED, '系统预置职位的编码不可修改');
+    /* ★ 2026-10-26：原来只拦「预置职位的编码不可改」。预置概念取消后改为通用规则 ——
+     *   role_code 是登录 token 里 roles[] 的取值依据，任何职位改了编码都会让已登录账号
+     *   的权限对不上，所以统一按「有没有账号在用」判断，而不是看它是不是预置。 */
+    if (nextCode !== exists.role_code) {
+      const usedBy = await countRoleUsers(exists.id);
+      if (usedBy > 0) {
+        throw new BizError(
+          BizCode.ROLE_IN_USE,
+          `该职位下有 ${usedBy} 个账号在用，职位编码不可修改（会让这些账号的权限失效）`,
+        );
+      }
     }
 
     const dupName = await db(TABLE)
@@ -602,10 +612,8 @@ roleRouter.delete(
     const exists = await db(TABLE).where({ id, is_deleted: false }).first();
     if (!exists) throw new BizError(BizCode.ROLE_NOT_FOUND, '职位不存在或已被删除');
 
-    if (exists.is_sys) {
-      throw new BizError(BizCode.PRESET_ROLE_PROTECTED, `「${exists.role_name}」是系统预置职位，不可删除`);
-    }
-
+    // ★ 2026-10-26：取消「预置职位不可删除」限制（用户要求系统中不再有预置概念）。
+    //   只保留唯一一条通用约束：职位下还有账号时不能删（否则这些账号会失去权限依据）。
     const userCount = await countRoleUsers(id);
     if (userCount > 0) {
       throw new BizError(BizCode.ROLE_IN_USE, `该职位还关联着 ${userCount} 个账号，请先解绑再删除`);
@@ -681,7 +689,7 @@ roleRouter.get(
 roleRouter.get(
   '/codes',
   wrap(async (_req, res) => {
-    const rows = await db(TABLE).where('is_deleted', false).orderBy('sort_no');
+    const rows = await orderRoles(db(TABLE).where('is_deleted', false));
     res.json(
       ok(
         rows.map((r: any) => ({
@@ -710,7 +718,7 @@ roleRouter.get(
         qb.where('role_name', 'like', `%${keyword}%`).orWhere('role_code', 'like', `%${keyword}%`);
       });
     }
-    const rows = await query.orderBy([{ column: 'is_sys', order: 'desc' }, { column: 'sort_no' }]);
+    const rows = await orderRoles(query);
     const list = await buildRoleListItems(rows);
     res.json(ok({ total: list.length, list }));
   }),
@@ -783,7 +791,7 @@ roleRouter.post(
         is_sys: false,
         role_status: RoleStatus.ENABLED,
         perm_count: 0,
-        sort_no: 99,
+        sort_no: await inferRoleSortNo(row.roleName),
         remark: row.remark || null,
         is_deleted: false,
         create_time: new Date(),

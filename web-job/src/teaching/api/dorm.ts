@@ -329,6 +329,8 @@ export interface DormClassRoomRow {
   room: string;
   /** 宿舍编号「楼栋-房号」，直接作为 dormNo 入库 */
   dormNo: string;
+  /** 楼层性别：1 男寝 / 2 女寝 / 0 未区分（按学生性别过滤男寝/女寝用） */
+  gender: number;
   bedCount: number;
   occupiedCount: number;
   beds: DormBedRow[];

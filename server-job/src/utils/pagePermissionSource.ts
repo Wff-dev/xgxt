@@ -703,6 +703,50 @@ const ALL_JOB_ACTION_CODES: string[] = (() => {
   return Array.from(set).sort();
 })();
 
+/**
+ * 财务侧（finance:*）的**全部操作码** —— 权限树派生 + 树外显式补齐。
+ *
+ * 【为什么分两段】
+ *   权限树里能勾出来、且登记了操作码的 finance:* 只有 4 个：
+ *     finance:fee:verify / finance:freeze:manage / finance:refund:pay / finance:standard:manage
+ *   而财务模块的接口守卫还会验这 3 个**树里没有对应动作**的码（业务上不需要单独勾）：
+ *     finance:fee:add     财务自己建缴费单
+ *     finance:fee:delete  删除/作废缴费单
+ *     finance:refund:apply 财务发起退费
+ *   另外财务侧「学员档案维护」的三个 consult:student:* 也挂在财务路由上。
+ *   两段合起来，才是「财务模块真正会校验的全部码」。
+ *
+ * 用途：校长（唯一全权角色）的静态兜底基准 —— 2026-10-27 补。
+ *   起因：校长在权限树里勾满 146 个点、6 个财务页面全可见、读接口全通，
+ *   但财务 16 个写接口一律 40302 —— 因为财务模块原先用的是它**私有的**
+ *   FIN_ROLE_OPERATIONS（只登记 FIN_STAFF / SYS_ADMIN），校长不在表里；
+ *   而校长的权限点等于基线 → 差异层（overlay）也没有「新增」可叠加。
+ */
+const FINANCE_ACTION_CODES_NOT_IN_TREE: string[] = [
+  'finance:fee:add',
+  'finance:fee:delete',
+  'finance:refund:apply',
+  // ★ 2026-10-27 merge：权限树有点位（urgeView/urgeSet）但 PERM_POINT_TO_ACTION_CODES
+  //   未登记这两个码；原 FIN_ROLE_OPERATIONS 私有表靠手抄兜底，私有表删除后由这里接管。
+  'finance:urge:view',
+  'finance:urge:manage',
+  'consult:student:add',
+  'consult:student:edit',
+  'consult:student:delete',
+];
+
+const ALL_FINANCE_ACTION_CODES: string[] = (() => {
+  const set = new Set<string>(FINANCE_ACTION_CODES_NOT_IN_TREE);
+  for (const actMap of Object.values(PERM_POINT_TO_ACTION_CODES)) {
+    for (const codes of Object.values(actMap)) {
+      codes.forEach((c) => {
+        if (c.startsWith('finance:')) set.add(c);
+      });
+    }
+  }
+  return Array.from(set).sort();
+})();
+
 const ROLE_OPERATION_PERMISSIONS: Record<string, string[]> = {
   /**
    * 校长 —— ★★ 2026-10-08 斌哥口径：「校长拥有全部权限，可以进行任何操作，
@@ -733,7 +777,27 @@ const ROLE_OPERATION_PERMISSIONS: Record<string, string[]> = {
     ...CLASS_MANAGER_ACTION_CODES,
     // 实训/就业侧全部 job 操作码（从权限树映射表派生，避免手工漏项）
     ...ALL_JOB_ACTION_CODES,
+    /**
+     * ★★ 2026-10-27（方案 B）：财务侧全部操作码。
+     *
+     *   上一轮只补了 job:*，财务还是走它自己的私有表 → 校长在财务模块
+     *   「能看不能动」（16 个写接口全 40302）。这里把 finance:* 一并给全，
+     *   与 job 同一口径：**全量静态兜底 + 管理员在职位权限分配里去勾即可撤销**
+     *   （overlay 的 removed 优先于静态兜底）。
+     */
+    ...ALL_FINANCE_ACTION_CODES,
   ],
+
+  /**
+   * 财务（FIN_STAFF）—— ★ 2026-10-27 从财务模块的私有表 FIN_ROLE_OPERATIONS 搬过来。
+   *
+   *   口径与原私有表**完全一致**（缴费全流程 + 退费出款 + 冻结 + 费用标准
+   *   + 财务侧学员档案维护），只是挪到中央表，让「一处配置、多模块生效」。
+   *
+   *   ⚠️ RoleCode 枚举（shared-types/class/enums.ts）里没有 FIN_STAFF
+   *      （只有已废弃的 FINANCE='ROLE_FINANCE'），所以这里用字面量。
+   */
+  FIN_STAFF: [...ALL_FINANCE_ACTION_CODES],
 
   /**
    * 学管主任 —— ★ 2026-10-06 起【只读 + 仅审批】

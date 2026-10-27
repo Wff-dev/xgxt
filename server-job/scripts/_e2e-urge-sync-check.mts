@@ -85,6 +85,14 @@ function track(db: any, table: string, id: string) {
   g.ids.push(id);
 }
 
+/**
+ * ★ 2026-10-26 补漏：同步流程会**自己新建行**（`finance-sync` 写的），这些 id
+ *   脚本拿不到，只按 tracked id 清理会漏 → 下次跑「前置：原本没有数据」直接红，
+ *   而且越跑越多（实测 t_uni_urge 里堆了 11 条 U26001/押金）。
+ *   这里按「测试学生 + 费用类型」兜底软删，跑多少次都干净。
+ */
+const leakGuard: Array<{ db: any; table: string; where: Record<string, any> }> = [];
+
 /* ============================================================
  * 场景 1：初高（t_uni_fee · edu_stage='jh'）
  * ============================================================ */
@@ -92,6 +100,12 @@ async function caseJh() {
   console.log('\n=== 场景1 · 初高：已有同科目台账 → 同步就地改状态 ===');
   const studentNo = 'S20260001'; // 演示数据里的初高学生
   const feeType = 7; // 押金：与演示数据错开
+
+  /**
+   * ⚠️ 这里**不做** leakGuard 兜底清理：
+   *   `S20260001 / 押金(7)` 在 t_uni_fee 里有演示数据，按学生+科目批量删会误伤。
+   *   初高同步本来就是「原地改状态」，不会新建行（实测行数稳定为 1）。
+   */
 
   // 0. 前置：确保该学生该科目只有我们造的那一条
   const pre = await rows(
@@ -216,6 +230,14 @@ async function caseClassUrge() {
   const studentNo = String(stu.student_no);
   const feeType = 7;
 
+  // ★ 同步流程可能自己插行（id 脚本拿不到），按「学生+科目+写入方=finance-sync」兜底清理，
+  //   否则下次跑的「前置：原本没有数据」直接红，而且越堆越多。
+  leakGuard.push({
+    db: common,
+    table: 't_uni_urge',
+    where: { student_no: studentNo, fee_type: feeType, update_by: 'finance-sync' },
+  });
+
   const pre = await rows(
     'SELECT COUNT(*) c FROM t_uni_urge WHERE student_no=? AND fee_type=? AND is_deleted=0',
     [studentNo, feeType],
@@ -310,6 +332,11 @@ async function caseJob() {
   }
   const studentNo = String(stu.student_no);
   const feeType = 7;
+
+  /**
+   * ⚠️ 这里**不做** leakGuard 兜底清理：
+   *   就业同步也是「原地改状态」，实测行数稳定为 1；按学生+科目批量删有误伤风险。
+   */
 
   const pre = await rows(
     'SELECT COUNT(*) c FROM t_uni_fee WHERE edu_stage=? AND student_no=? AND fee_type=? AND is_deleted=0',
@@ -410,6 +437,17 @@ try {
     `\n已清理夹具 ${cleanup.reduce((n, g) => n + g.ids.length, 0)} 条：` +
       cleanup.map((g) => `${g.table}×${g.ids.length}`).join(' , '),
   );
+  // 兜底：同步流程自己插的行（按学生+科目+写入方）
+  for (const g of leakGuard) {
+    try {
+      const n = await g.db(g.table)
+        .where(g.where)
+        .update({ is_deleted: true, update_by: 'selftest-cleanup' });
+      if (n) console.log(`  兜底清理 ${g.table} ${n} 条（${JSON.stringify(g.where)}）`);
+    } catch (e) {
+      console.warn(`  兜底清理 ${g.table} 失败：${(e as Error).message}`);
+    }
+  }
 
   const pass = results.filter((r) => r.ok).length;
   console.log(`\n===== 结果：${pass}/${results.length} 通过 =====`);
