@@ -589,6 +589,13 @@ const suppForm = ref({
   remark: '试学转正补缴尾款',
   dataUrl: '',
   voucherNo: '',
+  /**
+   * ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+   *
+   * 补费里学费填得比缺口少时，差额不是「少补」而是优惠，必须选名目
+   * （和「发起收费」同一套字典 DISCOUNT_REASONS）。
+   */
+  discountReason: '',
 });
 
 /**
@@ -625,6 +632,26 @@ const suppItems = ref<SuppItem[]>([]);
 /** 补费合计（元）= 明细各项之和；后端也会自己再加一遍，不信任前端 total */
 const suppTotalYuan = computed(() =>
   suppItems.value.reduce((s, i) => s + (Number(i.amountYuan) || 0), 0),
+);
+
+/**
+ * ★ 2026-10-27 补费里的学费优惠（元）
+ *
+ * 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」——
+ * 学费行填得比缺口少，差额走优惠（要有名目），不是「少补」。
+ * 其余费用项改小仍然只是少补（缺口还在），优惠只能从学费里出。
+ */
+const suppTuitionDiscount = computed(() => {
+  const row = suppItems.value.find(
+    (i) => Number(i.feeType) === FeeType.TUITION && !i.custom,
+  );
+  if (!row) return 0;
+  return Math.max(0, roundYuan(Number(row.dueYuan) - Number(row.amountYuan || 0)));
+});
+
+/** 补费明细的应缴合计（元）= 各行缺口之和；合计 − 应缴合计 = 优惠 */
+const suppDueTotalYuan = computed(() =>
+  suppItems.value.reduce((s, i) => s + (Number(i.dueYuan) || 0), 0),
 );
 
 /** 金额四舍五入到分（避免 450 × 3 这类浮点尾巴） */
@@ -706,6 +733,7 @@ async function openSupplement(row: ConsultFeeOrder) {
     remark: '试学转正补缴尾款',
     dataUrl: '',
     voucherNo: '',
+    discountReason: '',
   };
   suppVisible.value = true;
 
@@ -779,13 +807,35 @@ async function submitSupplement() {
    *   每项可以留 0（这次先不补这项），但整单不能都是 0；
    *   合计由后端再算一遍，不信任前端传的 total。
    */
+  /**
+   * ★ 2026-10-27 学费有优惠 → 名目必填（与「发起收费」同一铁律）
+   *   优惠只能从学费里出，所以只有学费行的差额会走这条校验。
+   */
+  if (suppTuitionDiscount.value > 0 && !suppForm.value.discountReason) {
+    ElMessage.warning('学费有优惠，请选择优惠名目（奖学金 / 活动优惠 / 困难减免…）');
+    return;
+  }
+
   const items = suppItems.value
-    .map((i) => ({
-      feeType: i.feeType,
-      amount: Math.round((Number(i.amountYuan) || 0) * 100),
-      // ★ 2026-10-27 住宿费带月数，单据备注/明细里能看出「450 × 3 个月」
-      ...(i.months != null ? { months: Number(i.months) } : {}),
-    }))
+    .map((i) => {
+      const amount = Math.round((Number(i.amountYuan) || 0) * 100);
+      const dueAmount = Math.round((Number(i.dueYuan) || 0) * 100);
+      const isTuition = Number(i.feeType) === FeeType.TUITION && !i.custom;
+      return {
+        feeType: i.feeType,
+        amount,
+        // ★ 2026-10-27 住宿费带月数，单据备注/明细里能看出「450 × 3 个月」
+        ...(i.months != null ? { months: Number(i.months) } : {}),
+        /**
+         * ★ 2026-10-27 学费实缴 < 应缴：把应缴一起传上去，后端把差额记成优惠
+         *   （item_detail 的 standardAmount / discount / discountReason 三个字段），
+         *   这样财务看到的是「少收 700 元·团报优惠」，而不是「还欠 700」。
+         */
+        ...(isTuition && dueAmount > amount
+          ? { dueAmount, discountReason: suppForm.value.discountReason }
+          : {}),
+      };
+    })
     .filter((i) => i.amount > 0);
 
   if (!items.length) {
@@ -1555,7 +1605,7 @@ onMounted(load);
     </el-dialog>
 
     <!-- ============ ★ 2026-10-20 补费（试学转正尾款 / 差额补收，金额自定义） ============ -->
-    <el-dialog v-model="suppVisible" title="补费" width="720px">
+    <el-dialog v-model="suppVisible" title="补费" width="820px">
       <el-alert type="success" :closable="false" show-icon class="mb">
         <template #title>
           补费<strong>按费用项逐项填</strong>（默认带出还差多少，可按实收调小）。
@@ -1627,6 +1677,26 @@ onMounted(load);
                 />
               </template>
             </el-table-column>
+            <!--
+              ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+                学费行实缴少于应补时，差额自动算成优惠（下面选名目），不是「少补」。
+                其他费用项不含优惠概念（改小 = 这次先少补，缺口还在）。
+            -->
+            <el-table-column label="优惠（元）" width="120" align="right">
+              <template #default="{ row }">
+                <b
+                  v-if="
+                    Number(row.feeType) === FeeType.TUITION &&
+                    !row.custom &&
+                    Number(row.dueYuan) - Number(row.amountYuan || 0) > 0
+                  "
+                  class="discount-strong"
+                >
+                  ¥{{ (Number(row.dueYuan) - Number(row.amountYuan || 0)).toFixed(2) }}
+                </b>
+                <span v-else class="fee-calc">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="住宿月数" width="120" align="center">
               <template #default="{ row }">
                 <el-input-number
@@ -1646,14 +1716,43 @@ onMounted(load);
             </el-table-column>
           </el-table>
           <div class="stu-sub mt8">
-            默认按缺口带出，可按实收金额调小（可少于缺口）；某项留 0 表示这次不补这一项。
-            住宿费按月补：{{ fmtYuan(accommodationUnitPrice) }} 元/月，改「住宿月数」即可，最多补到缺口月数。
+            默认按缺口带出，可按实收金额调小。某项留 0 表示这次不补这一项（缺口仍在）。
+            <br />
+            · <b>学费</b>实缴少于应补的部分自动算<b>优惠</b>（需选名目，优惠只能从学费里出）；
+            · 其他费用项改小只是这次少补，差额下次还能补。
+            <br />
+            · 住宿费按月补：{{ fmtYuan(accommodationUnitPrice) }} 元/月，改「住宿月数」即可，最多补到缺口月数。
           </div>
+        </el-form-item>
+
+        <!--
+          ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+            学费有优惠才出现，且必选 —— 财务核对时要知道这笔少收的钱按什么批的。
+        -->
+        <el-form-item v-if="suppTuitionDiscount > 0" label="优惠名目" required>
+          <el-select
+            v-model="suppForm.discountReason"
+            placeholder="请选择优惠名目"
+            style="width: 240px"
+          >
+            <el-option v-for="r in DISCOUNT_REASONS" :key="r" :label="r" :value="r" />
+          </el-select>
+          <span class="fee-note">
+            学费优惠 ¥{{ suppTuitionDiscount.toFixed(2) }}（应补 − 实缴），名目会随单落库
+          </span>
         </el-form-item>
 
         <el-form-item label="补费合计">
           <b class="amount-strong">¥{{ suppTotalYuan.toFixed(2) }}</b>
-          <span class="fee-note">= 明细之和（落库为一张「补学费」单，明细随单保存）</span>
+          <span class="fee-note">= 明细实缴之和（落库为一张「补学费」单，明细随单保存）</span>
+        </el-form-item>
+
+        <!-- 应缴 / 实缴 / 优惠 三个口径对齐（仅学费有优惠时显示，避免平时多一行噪音） -->
+        <el-form-item v-if="suppTuitionDiscount > 0" label="应缴 / 优惠">
+          <span class="fee-note">
+            应缴 ¥{{ suppDueTotalYuan.toFixed(2) }} − 优惠 ¥{{ suppTuitionDiscount.toFixed(2) }}
+            = 实缴 ¥{{ suppTotalYuan.toFixed(2) }}
+          </span>
         </el-form-item>
 
         <el-form-item label="补费说明">
@@ -1756,6 +1855,41 @@ onMounted(load);
           <el-table-column prop="feeTypeName" label="费用项" />
           <el-table-column prop="amountYuan" label="金额" width="120" />
           <el-table-column prop="statusName" label="状态" width="120" />
+        </el-table>
+      </div>
+
+      <!--
+        ★ 2026-10-27 补费单的逐项明细（应缴 / 实缴 / 优惠 / 名目）
+          用户口径：「学费应缴比实缴多的算优惠」—— 看单的人要能一眼看出
+          学费是「优惠了 700」还是「还欠 700」，所以把三个口径都列出来。
+      -->
+      <div v-if="detailRow?.feeType === FeeType.SUPPLEMENT && detailRow?.itemDetail?.length" class="mt">
+        <div class="detail-label">补费明细（应缴 / 实缴 / 优惠）</div>
+        <el-table :data="detailRow.itemDetail" size="small" border>
+          <el-table-column prop="feeTypeName" label="费用项" min-width="110" />
+          <el-table-column label="应缴" width="120" align="right">
+            <template #default="{ row }">
+              ¥{{ ((row.standardAmount ?? row.amount) / 100).toFixed(2) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="实缴" width="120" align="right">
+            <template #default="{ row }">¥{{ (row.amount / 100).toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="优惠" width="150" align="right">
+            <template #default="{ row }">
+              <b v-if="Number(row.discount) > 0" class="discount-strong">
+                ¥{{ (Number(row.discount) / 100).toFixed(2) }}
+              </b>
+              <span v-else class="fee-calc">—</span>
+              <div v-if="row.discountReason" class="fee-calc">{{ row.discountReason }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="住宿月数" width="100" align="center">
+            <template #default="{ row }">
+              <span v-if="row.months" class="fee-calc">{{ row.months }} 个月</span>
+              <span v-else class="fee-calc">—</span>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
 

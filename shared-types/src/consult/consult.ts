@@ -468,6 +468,10 @@ export interface ConsultFeeOrder {
     standardAmount?: number;
     /** 优惠（应缴 - 实缴，分） */
     discount?: number;
+    /** 该费用项的优惠名目（2026-10-27 补费学费改小时带出来） */
+    discountReason?: string;
+    /** 住宿费补缴的月数（仅补费单可能带，如 3 = 450 × 3） */
+    months?: number;
   }>;
   /** ★ 2026-10-16 整单口径：应缴合计（分） */
   dueAmount?: number;
@@ -1299,4 +1303,20 @@ export interface ConsultSupplementItem {
    * 前端算好 amount 传上来，months 只用于单据备注/明细展示（450 × 3 个月）。
    */
   months?: number;
+  /**
+   * ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+   *
+   * 该项的【应缴】金额（分，= 补费弹窗里的缺口）。
+   *   · 不传 → 等于 amount（无优惠，老调用方不用改）；
+   *   · 传了且 > amount → 差额就是优惠，落 item_detail 的 discount，
+   *     并且 discountAmount / dueAmount 在详情页能对上。
+   * ⚠️ 只有学费项允许应缴 > 实缴，其他项「少补」仍然只是少补（缺口还在）。
+   */
+  dueAmount?: number;
+  /**
+   * ★ 2026-10-27 优惠名目（dueAmount > amount 时必填，从 DISCOUNT_REASONS 里选）
+   *
+   * 和「发起收费」同一铁律：少收的钱必须说清按什么批的，否者财务无从核对。
+   */
+  discountReason?: string;
 }

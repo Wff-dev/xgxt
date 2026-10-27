@@ -477,6 +477,14 @@ const supplementSchema = z.object({
          *   金额仍以 amount 为准（前端按 450 × 月数算好），months 只用于备注/明细展示。
          */
         months: z.coerce.number().int().min(1).max(12).optional(),
+        /**
+         * ★ 2026-10-27 该项【应缴】（分，= 补费弹窗里的缺口）
+         *
+         * 不传 = amount（无优惠）；传了且 > amount → 差额记优惠（只允许学费）。
+         */
+        dueAmount: z.coerce.number().int().min(0, '应缴金额不能为负（单位：分）').optional(),
+        /** 优惠名目（有优惠时必填，取值见 DISCOUNT_REASONS） */
+        discountReason: z.string().max(50).optional(),
       }),
     )
     .optional(),
@@ -511,7 +519,13 @@ feeRouter.post(
       body.consultStudentId,
       // 传了明细 → 按明细加总；没传 → 老口径的一笔自定义补费
       body.items?.length
-        ? body.items.map((i) => ({ feeType: i.feeType as FeeType, amount: i.amount, months: i.months }))
+        ? body.items.map((i) => ({
+            feeType: i.feeType as FeeType,
+            amount: i.amount,
+            months: i.months,
+            dueAmount: i.dueAmount,
+            discountReason: i.discountReason,
+          }))
         : body.amount!,
       { name: operator.userName, title: operator.roleTitle },
       {

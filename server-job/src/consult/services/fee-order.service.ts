@@ -22,6 +22,8 @@ import {
   ConsultState,
   CONSULT_STATE_NAME,
   nameOf,
+  // ★ 2026-10-27 补费学费改小 → 差额记优惠，名目必须从固定字典里选
+  DISCOUNT_REASONS,
 } from 'shared-types/consult';
 import type {
   ConsultFeeOrder,
@@ -1189,12 +1191,26 @@ export async function createSupplementFee(
     : [{ feeType: FeeType.SUPPLEMENT, amount: Number(amountOrItems) }];
 
   const detailItems = rawItems
-    .map((i) => ({
-      feeType: Number(i?.feeType),
-      amount: Math.round(Number(i?.amount)),
-      /** ★ 住宿费按月补时带上月数（只用于展示，金额仍以 amount 为准） */
-      months: i?.months == null ? null : Number(i.months),
-    }))
+    .map((i) => {
+      const amount = Math.round(Number(i?.amount));
+      /**
+       * ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+       *
+       * dueAmount = 该项应缴（补费弹窗里的缺口）。不传时等于 amount（老调用方无优惠）。
+       * 传了且 > amount → 差额是优惠，不是「少补」：必须有名目，且只允许学费。
+       */
+      const dueAmount = i?.dueAmount == null ? amount : Math.round(Number(i.dueAmount));
+      return {
+        feeType: Number(i?.feeType),
+        amount,
+        dueAmount,
+        /** 优惠（分）= 应缴 − 实缴，恒 ≥ 0（实缴比应缴还大属于录错，下面拦掉） */
+        discount: Math.max(0, dueAmount - amount),
+        discountReason: (i?.discountReason || '').trim(),
+        /** ★ 住宿费按月补时带上月数（只用于展示，金额仍以 amount 为准） */
+        months: i?.months == null ? null : Number(i.months),
+      };
+    })
     .filter((i) => Number.isFinite(i.amount) && i.amount > 0);
 
   if (!detailItems.length) {
@@ -1218,18 +1234,55 @@ export async function createSupplementFee(
       );
     }
     seenTypes.add(i.feeType);
+
+    /**
+     * ★ 2026-10-27 应缴 / 实缴 / 优惠：和「发起收费」同一套铁律
+     *
+     *   ① 实缴不能大于应缴（多收要改应缴，不能凭空多一笔）；
+     *   ② 优惠只能从【学费】里出，住宿费/餐费/保险一律按应缴全额补；
+     *   ③ 有优惠必须有名目 —— 财务要知道这笔少收的钱按什么批的。
+     */
+    if (i.amount > i.dueAmount) {
+      throw new BizError(
+        BizCode.PARAM_ERROR,
+        `「${nameOf(FEE_TYPE_NAME, i.feeType)}」本次补缴不能大于应补（¥${centToYuan(i.dueAmount)}）`,
+      );
+    }
+    if (i.discount > 0) {
+      if (i.feeType !== FeeType.TUITION) {
+        throw new BizError(
+          BizCode.PARAM_ERROR,
+          `优惠只能抵扣学费，「${nameOf(FEE_TYPE_NAME, i.feeType)}」请按应补金额全额补缴`,
+        );
+      }
+      if (!i.discountReason) {
+        throw new BizError(BizCode.PARAM_ERROR, '学费有优惠，请选择优惠名目（奖学金 / 活动优惠 …）');
+      }
+      if (!(DISCOUNT_REASONS as readonly string[]).includes(i.discountReason)) {
+        throw new BizError(
+          BizCode.PARAM_ERROR,
+          `优惠名目「${i.discountReason}」不在可选范围内，请从 ${DISCOUNT_REASONS.join(' / ')} 里选`,
+        );
+      }
+    }
   }
 
   /** 单据金额 = 明细合计（不信任前端传的 total，一律后端自己加） */
   const amount = detailItems.reduce((s, i) => s + i.amount, 0);
   const detailText = detailItems
-    .map(
-      (i) =>
-        `${nameOf(FEE_TYPE_NAME, i.feeType)} ¥${centToYuan(i.amount)}${
-          i.months ? `（${i.months} 个月）` : ''
-        }`,
-    )
+    .map((i) => {
+      const base = `${nameOf(FEE_TYPE_NAME, i.feeType)} ¥${centToYuan(i.amount)}${
+        i.months ? `（${i.months} 个月）` : ''
+      }`;
+      /** ★ 2026-10-27 学费改小的差额是优惠，备注里写清「应缴多少、优惠多少、什么名目」 */
+      return i.discount > 0
+        ? `${base}（应缴 ¥${centToYuan(i.dueAmount)}，优惠 ¥${centToYuan(i.discount)}·${i.discountReason}）`
+        : base;
+    })
     .join(' / ');
+
+  /** 整单优惠合计（分）：只有学费项可能 > 0 */
+  const totalDiscount = detailItems.reduce((s, i) => s + i.discount, 0);
 
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new BizError(BizCode.PARAM_ERROR, '补费金额必须大于 0');
@@ -1342,20 +1395,27 @@ export async function createSupplementFee(
      *
      * 单据本身仍是一张「补学费」（fee_type=8），item_detail 记的是
      * 「这次补的钱分别抵了哪些费用项」，详情页会按这张表逐项列出。
-     * 补费没有「标准价」，所以 standardAmount = amount、discount = 0，
-     * 不会触发「优惠必须有名目」的校验。
+     *
+     * ★ 2026-10-27 学费改小 → 差额记优惠（用户口径：「应缴比实缴多的算优惠」）：
+     *    standardAmount 记该项应缴（缺口），discount 记差额，
+     *    这样列表/详情的「应缴 / 优惠 / 实缴」三个数能对上，也不会被当成「欠着没补」。
      */
     item_detail: JSON.stringify(
       detailItems.map((i) => ({
         feeType: i.feeType,
         feeTypeName: nameOf(FEE_TYPE_NAME, i.feeType),
         amount: i.amount,
-        standardAmount: i.amount,
-        discount: 0,
+        standardAmount: i.dueAmount,
+        discount: i.discount,
+        ...(i.discount > 0 ? { discountReason: i.discountReason } : {}),
         /** ★ 住宿费按月补的月数（见 ConsultSupplementItem.months） */
         ...(i.months ? { months: i.months } : {}),
       })),
     ),
+    // ★ 2026-10-27 整单优惠名目（学费有优惠才有值，没优惠留 NULL）
+    discount_reason: totalDiscount > 0
+      ? detailItems.find((i) => i.discount > 0)?.discountReason || null
+      : null,
     create_time: new Date(),
     create_by: operator.name,
     create_by_name: operator.name,
