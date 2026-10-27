@@ -216,7 +216,7 @@ CREATE TABLE `t_consult_fee_order` (
   `stage_no` int DEFAULT NULL COMMENT '★ 2026-10-16 分期：第几期，从 1 开始（一次性缴费为 NULL）',
   `total_due_amount` int DEFAULT NULL COMMENT '★ 2026-10-16 分期：整单应收（分）；一次性缴费为 NULL',
   `item_detail` text COMMENT '★ 2026-10-15 合并缴费的明细（JSON 数组：[{feeType,feeTypeName,amount}]）。一次缴清多项时只建一张合计单，勾选了哪些费用存在这里，单笔缴费为 NULL',
-  `discount_reason` varchar(50) DEFAULT NULL COMMENT '★ 2026-10-26 优惠名目（奖学金/活动优惠/困难减免…），无优惠为 NULL',
+  `discount_reason` varchar(50) DEFAULT NULL COMMENT '★ 2026-10-26 优惠名目（活动优惠/团报优惠/困难减免…），无优惠为 NULL',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_cfo_order_no` (`order_no`),
   KEY `idx_cfo_student` (`consult_student_id`),

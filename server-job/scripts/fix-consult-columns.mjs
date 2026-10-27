@@ -53,7 +53,7 @@ const TABLES = {
      * ★ 2026-10-26 用户口径：「优惠金额要有明确的名目，优惠只能优惠学费」
      *   有优惠（实缴 < 应缴）时必填，取值见 shared-types 的 DISCOUNT_REASONS。
      */
-    ['discount_reason', "varchar(50) DEFAULT NULL COMMENT '优惠名目（奖学金/活动优惠/困难减免…），无优惠为 NULL'"],
+    ['discount_reason', "varchar(50) DEFAULT NULL COMMENT '优惠名目（活动优惠/团报优惠/困难减免…），无优惠为 NULL'"],
     /**
      * ★ 2026-10-26 补：财务核对回写咨询收款单的两个字段。
      *   consult/services/fee-order.service.ts 已在读（详情展示「核对人/核对时间」、

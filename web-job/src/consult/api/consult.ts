@@ -352,7 +352,7 @@ export interface ConsultSupplementPayload {
      * 传了且 > amount → 差额记优惠（只允许学费，且必须带 discountReason）。
      */
     dueAmount?: number;
-    /** 优惠名目（奖学金 / 活动优惠 …，有优惠时必填） */
+    /** 优惠名目（活动优惠 / 团报优惠 …，有优惠时必填） */
     discountReason?: string;
   }>;
   /** 补费金额（单位：分）——没传 items 时的老口径「一笔自定义补费」 */

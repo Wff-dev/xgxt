@@ -480,7 +480,7 @@ export interface ConsultFeeOrder {
   /**
    * ★ 2026-10-26 用户口径：「优惠金额要有明确的名目」
    *
-   * 优惠不能是一个来路不明的差额 —— 建单时必须选名目（奖学金 / 活动优惠 / 困难减免…），
+   * 优惠不能是一个来路不明的差额 —— 建单时必须选名目（活动优惠 / 团报优惠 / 困难减免…），
    * 财务核对时才知道这笔少收的钱是怎么批的。落库 t_consult_fee_order.discount_reason。
    */
   discountReason?: string;

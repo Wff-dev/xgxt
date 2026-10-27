@@ -26,7 +26,7 @@ import {
   ConsultFeeStatus,
   ConsultState,
   PAY_METHODS,
-  // ★ 2026-10-26 优惠名目字典（奖学金 / 活动优惠 / 困难减免…）
+  // ★ 2026-10-26 优惠名目字典（活动优惠 / 团报优惠 / 困难减免…）
   DISCOUNT_REASONS,
 } from 'shared-types/consult';
 import {
@@ -246,7 +246,7 @@ const createForm = ref<{
    * ★ 2026-10-26 优惠名目（有优惠时必选）
    *
    * 用户口径：「优惠金额要有明确的名目」—— 优惠不能只是一个差额，
-   * 必须说明是按什么名目少的（奖学金 / 活动优惠 / 困难减免…）。
+   * 必须说明是按什么名目少的（活动优惠 / 团报优惠 / 困难减免…）。
    */
   discountReason: string;
 }>({
@@ -512,7 +512,7 @@ async function submitCreate() {
     diff = Number(formalDiscount.value);
     if (diff > 0) {
       if (!f.discountReason) {
-        ElMessage.warning('请选择优惠名目（奖学金 / 活动优惠 / 困难减免…）');
+        ElMessage.warning('请选择优惠名目（活动优惠 / 团报优惠 / 困难减免…）');
         return;
       }
       amountByType[FeeType.TUITION] = Math.round(Number(tuitionInput.value) * 100);
@@ -812,7 +812,7 @@ async function submitSupplement() {
    *   优惠只能从学费里出，所以只有学费行的差额会走这条校验。
    */
   if (suppTuitionDiscount.value > 0 && !suppForm.value.discountReason) {
-    ElMessage.warning('学费有优惠，请选择优惠名目（奖学金 / 活动优惠 / 困难减免…）');
+    ElMessage.warning('学费有优惠，请选择优惠名目（活动优惠 / 团报优惠 / 困难减免…）');
     return;
   }
 

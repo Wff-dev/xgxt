@@ -766,7 +766,7 @@ export async function createCombinedFees(
   if (discountTotal > 0 && !reason) {
     throw new BizError(
       BizCode.PARAM_ERROR,
-      `本次优惠 ¥${centToYuan(discountTotal)} 需要选择优惠名目（奖学金 / 活动优惠 / 困难减免…），否则财务无法核对`,
+      `本次优惠 ¥${centToYuan(discountTotal)} 需要选择优惠名目（活动优惠 / 团报优惠 / 困难减免…），否则财务无法核对`,
     );
   }
   /** 优惠名目的落地值：没优惠就不留痕（避免「无优惠」的单子上挂着名目） */
@@ -1016,7 +1016,7 @@ export async function createFees(
       if (singleDiscount > 0 && !singleReason) {
         throw new BizError(
           BizCode.PARAM_ERROR,
-          `${feeTypeName} 优惠 ¥${centToYuan(singleDiscount)} 需要选择优惠名目（奖学金 / 活动优惠 / 困难减免…），否则财务无法核对`,
+          `${feeTypeName} 优惠 ¥${centToYuan(singleDiscount)} 需要选择优惠名目（活动优惠 / 团报优惠 / 困难减免…），否则财务无法核对`,
         );
       }
 
@@ -1256,7 +1256,7 @@ export async function createSupplementFee(
         );
       }
       if (!i.discountReason) {
-        throw new BizError(BizCode.PARAM_ERROR, '学费有优惠，请选择优惠名目（奖学金 / 活动优惠 …）');
+        throw new BizError(BizCode.PARAM_ERROR, '学费有优惠，请选择优惠名目（活动优惠 / 团报优惠 …）');
       }
       if (!(DISCOUNT_REASONS as readonly string[]).includes(i.discountReason)) {
         throw new BizError(
