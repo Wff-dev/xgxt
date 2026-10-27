@@ -182,6 +182,10 @@ export const financeClient = {
       amount: number;
       standardAmount: number;
       discount: number;
+      /** ★ 2026-10-27 住宿费/餐费月数（保险费为年数），财务按它算到期日 */
+      months?: number;
+      /** ★ 2026-10-27 优惠名目（学费才有） */
+      discountReason?: string;
     }>;
   }): Promise<{ id: string; amount?: number }> {
     return request<{ id: string; amount?: number }>('/api/finance/fee/add', {

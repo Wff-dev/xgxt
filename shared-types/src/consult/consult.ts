@@ -468,6 +468,10 @@ export interface ConsultFeeOrder {
     standardAmount?: number;
     /** 优惠（应缴 - 实缴，分） */
     discount?: number;
+    /** 该费用项的优惠名目（2026-10-27 补费学费改小时带出来） */
+    discountReason?: string;
+    /** 住宿费补缴的月数（仅补费单可能带，如 3 = 450 × 3） */
+    months?: number;
   }>;
   /** ★ 2026-10-16 整单口径：应缴合计（分） */
   dueAmount?: number;
@@ -476,7 +480,7 @@ export interface ConsultFeeOrder {
   /**
    * ★ 2026-10-26 用户口径：「优惠金额要有明确的名目」
    *
-   * 优惠不能是一个来路不明的差额 —— 建单时必须选名目（奖学金 / 活动优惠 / 困难减免…），
+   * 优惠不能是一个来路不明的差额 —— 建单时必须选名目（活动优惠 / 团报优惠 / 困难减免…），
    * 财务核对时才知道这笔少收的钱是怎么批的。落库 t_consult_fee_order.discount_reason。
    */
   discountReason?: string;
@@ -1255,3 +1259,64 @@ export const FULL_FEE_TYPES: FeeType[] = [
   FeeType.MEAL,
   FeeType.INSURANCE,
 ];
+
+/* ============================================================
+ * ★ 2026-10-27 学生姓名规则（前后端共用，只有这一份）
+ *
+ * 用户口径：「新建学生姓名必须汉字 2 位以上，可以有·和-，中英文都可以」
+ *
+ *   · 至少 2 个字符（中文 2 字名 / 英文 Joe 都算）；
+ *   · 首字符必须是中文或英文字母 —— 挡住「·张三」「-李四」「  王五」这类脏数据；
+ *   · 其余位置允许中文、英文、空格，以及「·」「•」「-」「—」
+ *     （少数民族姓名「阿卜杜拉·买买提」、复姓/双名「欧阳-娜娜」、英文 "John Smith" 都要能录）；
+ *   · 最长 30 个字符（与库字段长度一致）。
+ * ============================================================ */
+export const STUDENT_NAME_RE = /^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z·•\-—\s]{1,29}$/;
+
+/** 姓名不合规时的统一提示（前端 ElMessage 与后端 zod 用同一句，避免两边口径不一致） */
+export const STUDENT_NAME_TIP = '学生姓名至少 2 个字符，只能是中文、英文或「·」「-」';
+
+/** 校验学生姓名；合规返回 null，不合规返回提示文案 */
+export function studentNameError(name?: string | null): string | null {
+  const s = String(name ?? '').trim();
+  if (!s) return '请填写学生姓名';
+  if (!STUDENT_NAME_RE.test(s)) return STUDENT_NAME_TIP;
+  return null;
+}
+
+/**
+ * ★ 2026-10-27 补费明细项
+ *
+ * 用户口径：「补费也要有具体明细」—— 补费不再是一笔说不清来源的总额，
+ * 而是按「学费 / 住宿费 / 餐费 / 保险费」逐项填，合计即补费单金额。
+ * 落库仍是一张「补学费」单（fee_type=8），item_detail 里存这份明细。
+ */
+export interface ConsultSupplementItem {
+  /** 费用项类型（FULL_FEE_TYPES 里的项；自定义补费用 SUPPLEMENT） */
+  feeType: FeeType;
+  /** 本次补缴金额（单位：分） */
+  amount: number;
+  /**
+   * ★ 2026-10-27 住宿费按月补：本次补几个月（仅 feeType=ACCOMMODATION 时有意义）
+   *
+   * 住宿费标准价是 6 个月的价（2700 = 450 × 6），补费时老师按「月数」补，
+   * 前端算好 amount 传上来，months 只用于单据备注/明细展示（450 × 3 个月）。
+   */
+  months?: number;
+  /**
+   * ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+   *
+   * 该项的【应缴】金额（分，= 补费弹窗里的缺口）。
+   *   · 不传 → 等于 amount（无优惠，老调用方不用改）；
+   *   · 传了且 > amount → 差额就是优惠，落 item_detail 的 discount，
+   *     并且 discountAmount / dueAmount 在详情页能对上。
+   * ⚠️ 只有学费项允许应缴 > 实缴，其他项「少补」仍然只是少补（缺口还在）。
+   */
+  dueAmount?: number;
+  /**
+   * ★ 2026-10-27 优惠名目（dueAmount > amount 时必填，从 DISCOUNT_REASONS 里选）
+   *
+   * 和「发起收费」同一铁律：少收的钱必须说清按什么批的，否者财务无从核对。
+   */
+  discountReason?: string;
+}

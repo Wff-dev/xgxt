@@ -236,18 +236,27 @@
             </span>
           </div>
           <el-table :data="detailRow[g.key]?.records || []" size="small" border>
-            <el-table-column prop="date" label="日期" width="110" />
-            <el-table-column prop="feeTypeName" label="费用项" width="110" />
-            <el-table-column label="金额" width="130" align="right">
+            <el-table-column prop="date" label="日期" width="105" />
+            <el-table-column prop="feeTypeName" label="费用项" width="100" />
+            <el-table-column label="金额" width="120" align="right">
               <template #default="{ row }">
                 <b class="rec-amount">{{ formatAmount(row.amount) }}</b>
               </template>
             </el-table-column>
-            <el-table-column prop="billNo" label="账单号" width="150" />
-            <el-table-column prop="voucherNo" label="凭证号" min-width="120">
+            <el-table-column prop="billNo" label="账单号" width="140" />
+            <el-table-column prop="voucherNo" label="凭证号" width="105">
               <template #default="{ row }">{{ row.voucherNo || '—' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="90" align="center">
+            <!--
+              ★ 2026-10-27 每栏自己的备注（用户口径：「备注自动匹到财务里的每一栏儿」）
+              补费拆账后，住宿费栏只写住宿费那一项，不会挂着学费的优惠说明。
+            -->
+            <el-table-column label="备注" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="rec-remark">{{ row.remark || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="80" align="center">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="openFeeDetail(row)">
                   详情 ›
@@ -851,6 +860,12 @@ onMounted(() => {
 
 .rec-amount {
   color: #B22A23;
+}
+
+/* ★ 2026-10-27 每栏自己的备注（长文省略，悬停看全） */
+.rec-remark {
+  font-size: 11.5px;
+  color: #8a8378;
 }
 
 /* ★ 2026-10-26 弹窗里可点击的记录行（点了弹缴费单） */

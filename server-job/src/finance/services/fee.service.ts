@@ -188,6 +188,10 @@ export function parseItemDetail(raw: any): Array<{
   standardAmountYuan: string;
   discount: number;
   discountYuan: string;
+  /** ★ 2026-10-27 补费里住宿费/餐费的月数（保险费为年数），用于算到期日 */
+  months?: number;
+  /** ★ 2026-10-27 优惠名目（学费才有） */
+  discountReason?: string;
 }> {
   if (!raw) return [];
   let arr: any[] = [];
@@ -215,6 +219,8 @@ export function parseItemDetail(raw: any): Array<{
         standardAmountYuan: centToYuan(std),
         discount,
         discountYuan: centToYuan(discount),
+        months: i.months != null ? Number(i.months) : undefined,
+        discountReason: i.discountReason || undefined,
       };
     });
 }
@@ -602,20 +608,42 @@ async function calcExpireDate(
   t: Knex.Transaction,
   row: any,
   payDate: string,
+  /**
+   * ★ 2026-10-27 已知周期（补费明细里的月数/年数）
+   *
+   * 补费是「按月补」的：老师填了 6 个月就补 6 个月，金额也是 450 × 6 算出来的。
+   * 用「金额 ÷ 标准价」反推月数在标准价改过之后会算错（本来 6 个月的账算成 5 个月），
+   * 所以明细里带了月数就直接用，不再反推。
+   *
+   *   · 餐费 / 住宿费：传月数
+   *   · 保险费：传年数（与 unit === 'Y' 的口径一致）
+   */
+  monthsHint?: number,
 ): Promise<string | null> {
   const feeType = Number(row.fee_type);
-  // 没有到期概念的费用（学费/试学费/押金/校服…）直接返回
-  if (!expireUnitOf(feeType)) return null;
+  // 没有到期概念的费用（学费/试学费/押金/校服/补费…）直接返回
+  // ★ 口径统一在 services/expire.ts（核对入账与历史回填走同一份，避免两套规则）
+  const unit = expireUnitOf(feeType);
+  if (!unit) return null;
 
-  // 取该费用在该部门的标准价（没有标准就算不出来，留空而不是瞎算）
+  /**
+   * ★ 2026-10-27 补费明细里带了周期（住宿/餐费=月，保险=年）→ 直接用，不再反推
+   *
+   * 「金额 ÷ 标准价」在标准价改过之后会算错月数（本来 6 个月的账算成 5 个月），
+   * 所以明细里给了月数就以月数为准，这时连标准价都不用查。
+   */
+  const hint = Number(monthsHint) || 0;
   let std = 0;
-  try {
-    const s = await getStandard(feeType, Number(row.dept_code ?? 1));
-    std = Number(s.amount) || 0;
-  } catch {
-    std = 0;
+  if (!hint) {
+    // 取该费用在该部门的标准价（没有标准就算不出来，留空而不是瞎算）
+    try {
+      const s = await getStandard(feeType, Number(row.dept_code ?? 1));
+      std = Number(s.amount) || 0;
+    } catch {
+      std = 0;
+    }
+    if (std <= 0) return null;
   }
-  if (std <= 0) return null;
 
   // 该生该费用「已入账」账单里最晚的到期日 —— 续费从这里接
   const prev = await t(BILL_TABLE)
@@ -637,6 +665,8 @@ async function calcExpireDate(
     payDate,
     stdAmount: std,
     prevExpire: prevDate,
+    // 补费给了明确周期 → 按周期算（保险费填的是年，先折成月，与 unit 的 M/Y 口径一致）
+    ...(hint ? { months: unit === 'Y' ? hint * 12 : hint } : {}),
   });
 }
 
@@ -676,6 +706,10 @@ export async function verifyFee(
     const payDate = toDateStr(row.pay_date) || toDateStr(now)!;
 
     /**
+     * ★ 2026-10-27 补费单：一个「补学费」单里装着学费/住宿费/餐费/保险费，
+     *   核对时要拆到各自那一栏，并且每栏的备注只写自己那一项
+     *   （用户口径：「备注自动匹到财务里的每一栏儿」）。
+     *
      * ★ 2026-10-26 合并单按分项拆账
      *
      * 一次缴清多类费用（学费 + 餐费 + 住宿费…）时，缴费单只有 1 个 `fee_type`
@@ -689,14 +723,39 @@ export async function verifyFee(
      *   · 每条按自己的 fee_type 归组、各自算到期日
      *   · 各条金额之和 = 缴费单合计（对账口径不变）
      */
-    const parts: Array<{ feeType: number; amount: number }> = (() => {
+    const parts: Array<{
+      feeType: number;
+      amount: number;
+      /** 这一项自己的备注文案（补费才写；正式收费的合并单保持原样，不逐项改备注） */
+      text?: string;
+      /** 已知周期（住宿费/餐费的月数、保险费的年数），优先用它算到期日 */
+      months?: number;
+    }> = (() => {
       const items = parseItemDetail(row.item_detail);
+      /** 补费单才按分项写「自己那一栏」的备注，正式收费保持现状 */
+      const isSupplement = Number(row.fee_type) === FeeType.SUPPLEMENT;
       if (items.length > 1) {
         return items
-          .map((it: any) => ({
-            feeType: Number(it.feeType ?? it.fee_type ?? 0),
-            amount: Number(it.amount ?? 0),
-          }))
+          .map((it: any) => {
+            const feeType = Number(it.feeType ?? it.fee_type ?? 0);
+            const amount = Number(it.amount ?? 0);
+            const std = Number(it.standardAmount ?? amount);
+            const discount = Number(it.discount ?? std - amount);
+            return {
+              feeType,
+              amount,
+              months: it.months != null ? Number(it.months) : undefined,
+              text: isSupplement
+                ? `${FEE_TYPE_NAME[feeType] || it.feeTypeName || ''} ¥${centToYuan(amount)}` +
+                  (it.months ? `（${Number(it.months)} 个月）` : '') +
+                  (discount > 0
+                    ? `（应缴 ¥${centToYuan(std)}，优惠 ¥${centToYuan(discount)}${
+                        it.discountReason ? `·${it.discountReason}` : ''
+                      }）`
+                    : '')
+                : undefined,
+            };
+          })
           .filter((p) => p.feeType > 0 && p.amount > 0);
       }
       return [{ feeType: Number(row.fee_type), amount: Number(row.amount) || 0 }];
@@ -704,11 +763,13 @@ export async function verifyFee(
 
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
-      // ---- 到期日：按「这一项」的金额算，不是按合计 ----
+      // ---- 到期日：按「这一项」的金额/月数算，不是按合计 ----
+      //    学费不写到期日（没有时间限制）；住宿费/餐费/保险费从缴费完成那次核对起算
       const expireDate = await calcExpireDate(
         t,
         { ...row, fee_type: part.feeType, amount: part.amount },
         payDate,
+        part.months,
       );
       const subBillNo = i === 0 ? billNo : `${billNo}-${i + 1}`;
 
@@ -737,10 +798,19 @@ export async function verifyFee(
         operator_name: operator.userName,
         voucher_no: row.voucher_no ?? null,
         pay_method: null,
+        /**
+         * ★ 2026-10-27 备注拆到「各自那一栏」
+         *
+         * 补费单原来的备注是「学费…/住宿费…/餐费…/保险费…」一长串，
+         * 拆账后每一栏都挂着同一段长文，财务在住宿费栏看到学费的事。
+         * 现在每栏只写自己那一项（「补费分项 2/4｜住宿费 ¥2700.00（6 个月）」）。
+         */
         remark:
           remark ??
-          `缴费核对入账（${FEE_TYPE_NAME[part.feeType] || ''}）` +
-            (parts.length > 1 ? ` · 合并单分项 ${i + 1}/${parts.length}` : '') +
+          (part.text
+            ? `补费分项 ${i + 1}/${parts.length}｜${part.text}`
+            : `缴费核对入账（${FEE_TYPE_NAME[part.feeType] || ''}）` +
+              (parts.length > 1 ? ` · 合并单分项 ${i + 1}/${parts.length}` : '')) +
             (row.voucher_url ? '' : ' · 无电子凭证（现金/线下收款）'),
       });
     }

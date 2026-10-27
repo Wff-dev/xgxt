@@ -36,6 +36,8 @@ import {
   // ★ 2026-10-26 来源渠道：新增「市场来源」，下拉文案统一取字典
   LeadChannel,
   LEAD_CHANNEL_NAME,
+  // ★ 2026-10-27 姓名规则（与后端 addSchema 共用同一份正则与提示文案）
+  studentNameError,
 } from 'shared-types/consult';
 // ★ 2026-10-22 学历下拉：与班主任建档共用同一份选项（初中/高中/专科/本科/研究生）
 import { EDUCATION_OPTIONS } from 'shared-types';
@@ -387,8 +389,15 @@ async function submitNew() {
   const f = newForm.value;
 
   /* ---- 必填校验（对应表单上的星号）---- */
-  if (!f.studentName.trim()) {
-    ElMessage.warning('请填写学生姓名');
+  /**
+   * ★ 2026-10-27 用户口径：「新建学生姓名必须汉字 2 位以上，可以有·和-，中英文都可以」
+   *
+   * 规则收敛在 shared-types 的 studentNameError（后端 addSchema 用同一个正则），
+   * 这里只负责把提示弹出来 —— 两边口径永远一致，不会再出现前端过了后端拦的情况。
+   */
+  const nameErr = studentNameError(f.studentName);
+  if (nameErr) {
+    ElMessage.warning(nameErr);
     return;
   }
   // ★ 手机号必填（与后端 addSchema 的 required_error 口径一致，文案也统一）
@@ -1689,7 +1698,12 @@ onMounted(load);
     <el-dialog v-model="newVisible" title="新建学生" width="560px">
       <el-form label-width="96px">
         <el-form-item label="姓名" required>
-          <el-input v-model="newForm.studentName" placeholder="学生姓名" maxlength="50" />
+          <!-- ★ 2026-10-27 至少 2 个字符，中英文均可，允许「·」「-」（如 阿卜杜拉·买买提 / John Smith） -->
+          <el-input
+            v-model="newForm.studentName"
+            placeholder="学生姓名（2 个字符以上，可含·或-）"
+            maxlength="30"
+          />
         </el-form-item>
         <el-form-item label="性别">
           <el-radio-group v-model="newForm.gender">

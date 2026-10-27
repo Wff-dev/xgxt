@@ -26,7 +26,7 @@ import {
   ConsultFeeStatus,
   ConsultState,
   PAY_METHODS,
-  // ★ 2026-10-26 优惠名目字典（奖学金 / 活动优惠 / 困难减免…）
+  // ★ 2026-10-26 优惠名目字典（活动优惠 / 团报优惠 / 困难减免…）
   DISCOUNT_REASONS,
 } from 'shared-types/consult';
 import {
@@ -164,12 +164,41 @@ const accommodationUnitPrice = computed(() => {
 const accommodationAmount = computed(() => accommodationUnitPrice.value * accommodationMonths.value);
 
 /**
- * ★ 2026-10-16 正式学费的「实缴金额」（元）
+ * ★ 2026-10-27 学费实收金额（元）
  *
- * null = 老师没改 → 实缴 = 应缴（无优惠）；
- * 有值  = 本次实际收的钱。优惠 = 应缴 - 实缴（实缴 > 应缴 时显示「补收」）。
+ * 用户口径：「发起收费这里的正式学费里的学费可以修改，优惠是学费里的」
+ *
+ *   null = 老师没改过 → 学费按财务标准价（默认 28000）；
+ *   有值 = 老师填的谈定价（可小于标准，差额就是学费优惠；不允许高于标准）。
+ *
+ * ⚠️ 为什么不再单独搞一个「实缴金额」输入框：
+ *    两套减免入口（改学费 / 改实缴）容易双算，账面对不上。
+ *    现在减免只有一个来源 —— 学费。
+ *
+ * ★ 2026-10-27 用户口径：「应缴不变，实缴优惠保持现状」
+ *    改学费只影响「实缴」和「优惠」，**不改应缴**：
+ *      应缴 = 各项财务标准之和（学费 28000 + 住宿 …），始终是标准价；
+ *      优惠 = 学费标准 − 学费实收；
+ *      实缴 = 应缴 − 优惠 = 合计 = 本次实际收取。
+ *    这样账面恒等（28000 − 2000 = 26000），也和库里
+ *    standardAmount / amount / discount 三个字段一一对应。
  */
-const formalPaid = ref<number | null>(null);
+const tuitionAmount = ref<number | null>(null);
+
+/** 学费财务标准价（元） */
+const tuitionStd = computed(() => amountYuan(FeeType.TUITION, 28000));
+
+/** 学费金额输入框：没改过时显示标准价，改了就用老师的；不能高于标准 */
+const tuitionInput = computed({
+  get: () => tuitionAmount.value ?? tuitionStd.value,
+  set: (v: number) => {
+    if (!Number.isFinite(v)) {
+      tuitionAmount.value = null;
+      return;
+    }
+    tuitionAmount.value = Math.max(0, Math.min(Number(v), tuitionStd.value));
+  },
+});
 
 /* ============================================================
  * ★ 2026-10-26 收费类型：试学费 / 正式学费（用户口径恢复试学费）
@@ -217,7 +246,7 @@ const createForm = ref<{
    * ★ 2026-10-26 优惠名目（有优惠时必选）
    *
    * 用户口径：「优惠金额要有明确的名目」—— 优惠不能只是一个差额，
-   * 必须说明是按什么名目少的（奖学金 / 活动优惠 / 困难减免…）。
+   * 必须说明是按什么名目少的（活动优惠 / 团报优惠 / 困难减免…）。
    */
   discountReason: string;
 }>({
@@ -307,9 +336,12 @@ function fmtYuan(n: number): string {
  *
  * ★ 2026-10-26 住宿费按月计价：应缴 = 月单价 × 月数（默认 6 个月）；
  *    其余各项仍按财务费用标准取值。
+ * ★ 2026-10-27 学费这里取【财务标准价】—— 应缴不随谈定价变化，
+ *    改学费只体现在下面的「实缴 / 优惠」两行。
  */
 function itemAmount(item: { feeType: number; fallback: number }): number {
   if (item.feeType === FeeType.ACCOMMODATION) return accommodationAmount.value;
+  if (item.feeType === FeeType.TUITION) return tuitionStd.value;
   return amountYuan(item.feeType, item.fallback);
 }
 
@@ -322,11 +354,11 @@ function itemCalc(item: { feeType: number }): string {
 /**
  * 本次发起的合计金额（单位：元）
  *
- * ★ 2026-10-16 正式学费：合计 = 【实缴】（可能含优惠），不再是应缴。
  * ★ 2026-10-26 试学费：合计 = 老师填的试学费金额（试学费没有优惠概念）。
+ * ★ 2026-10-27 正式学费：合计 = 实缴 = 应缴 − 优惠（优惠已在学费里减掉）。
  */
 const createTotal = computed(() =>
-  createForm.value.category === 'TRIAL' ? trialAmountInput.value : formalPaidInput.value,
+  createForm.value.category === 'TRIAL' ? trialAmountInput.value : formalActual.value,
 );
 
 /** 正式学费的【应缴】合计（元）：勾选各项的财务标准之和（住宿费按月数） */
@@ -337,37 +369,29 @@ const formalDue = computed(() =>
   }, 0),
 );
 
-/** 正式学费的【实缴】输入框：没改过时显示应缴，改了就用老师的（元）
- *  ★ 2026-10-16 用户口径：实缴不能大于应缴，超出直接钳回应缴 */
-const formalPaidInput = computed({
-  get: () => formalPaid.value ?? formalDue.value,
-  set: (v: number) => {
-    if (!Number.isFinite(v)) {
-      formalPaid.value = null;
-      return;
-    }
-    formalPaid.value = formalDue.value > 0 && v > formalDue.value ? formalDue.value : v;
-  },
+/**
+ * 正式学费的【优惠】（元）= 学费标准价 − 学费实收价
+ *
+ * 用户口径：「优惠是学费里的」—— 减免只能来自学费，其他项不参与。
+ * 学费输入框已钳制 ≤ 标准价，所以这里恒 ≥ 0，不会出现「补收」。
+ */
+const formalDiscount = computed(() => {
+  if (!createForm.value.formalFeeTypes.includes(FeeType.TUITION)) return 0;
+  return Math.max(0, tuitionStd.value - tuitionInput.value);
 });
-
-/** 正式学费的【优惠】（元）：应缴 - 实缴（实缴已被钳制 ≤ 应缴，不会为负） */
-const formalDiscount = computed(() => formalDue.value - formalPaidInput.value);
 
 /**
- * ★ 2026-10-26 用户口径：「优惠只能优惠学费，其他金额不可以优惠」
+ * 正式学费的【实缴】合计（元）= 应缴 − 优惠
  *
- * 优惠（应缴 - 实缴）只能从【学费】里扣：
- *   - 勾了学费 → 学费实缴 = 学费应缴 - 优惠，其余各项照标准全额收；
- *   - 没勾学费 → 不允许有优惠（提交时拦，这里给红字提示）。
+ * 用户口径：「应缴不变，实缴优惠保持现状」—— 应缴是标准价合计，
+ * 实缴才是本次真正要收的钱，也是单据金额。
  */
-const canDiscount = computed(() => createForm.value.formalFeeTypes.includes(FeeType.TUITION));
-/** 优惠超过了学费应缴（学费减到负数）→ 直接拦住，提示调实缴 */
-const discountTooMuch = computed(() => {
-  if (formalDiscount.value <= 0) return false;
-  return formalDiscount.value > amountYuan(FeeType.TUITION, 28000);
-});
+const formalActual = computed(() => Math.max(0, formalDue.value - formalDiscount.value));
 
-/** 改勾选 / 改住宿月数 / 切换收费类型时，实缴回到「按应缴」 */
+/** 是否勾了学费（只有勾了学费才可能产生优惠） */
+const canDiscount = computed(() => createForm.value.formalFeeTypes.includes(FeeType.TUITION));
+
+/** 改勾选 / 改住宿月数 / 切换收费类型时，学费金额回到「按标准」 */
 watch(
   () => [
     createForm.value.category,
@@ -375,7 +399,7 @@ watch(
     accommodationMonths.value,
   ],
   () => {
-    formalPaid.value = null;
+    tuitionAmount.value = null;
   },
 );
 
@@ -418,8 +442,8 @@ function openCreate(row?: ConsultFeeOrder) {
     // ★ 2026-10-26 优惠名目每次打开都清空（不能把上一单的名目带过来）
     discountReason: '',
   };
-  // 每次打开都回到「按标准取值」，不把上一次手填的金额带过来
-  formalPaid.value = null;
+  // 每次打开都回到「按标准取值」，不把上一次手填的学费带过来
+  tuitionAmount.value = null;
   // ★ 2026-10-26 试学费金额回到财务标准（默认 5000），不记住上一单的手填值
   trialAmount.value = null;
   // ★ 2026-10-26 住宿月数默认 6 个月（财务标准价对应的月数）
@@ -460,7 +484,8 @@ async function submitCreate() {
    * ★ 2026-10-26 金额怎么传：
    *   ① 试学费：金额由老师填（默认 5000），原样传给后端，不算优惠、不要名目；
    *   ② 正式学费：住宿费按「月单价 × 月数」计价 → 传 accommodationMonths；
-   *      优惠只允许从【学费】里扣，其余各项一律按标准全额，不参与优惠。
+   *      学费可改（谈定价），改小的差额就是优惠，只传「学费」这一项的自定义金额，
+   *      其余各项一律按财务标准全额，不参与优惠。
    */
   const amountByType: Record<number, number> = {};
   let diff = 0;
@@ -473,46 +498,29 @@ async function submitCreate() {
     }
     amountByType[FeeType.TRIAL_FEE] = Math.round(trialYuan * 100);
   } else {
+    /**
+     * ★ 2026-10-27 用户口径：「正式学费里的学费可以修改，优惠是学费里的」
+     *
+     * 学费在弹窗里直接改（默认财务标准价），改小 → 差额记为学费优惠，必须选名目；
+     * 其他费用项不可改，一律按标准全额（优惠只能来自学费）。
+     */
     const due = Number(formalDue.value);
-    const paid = Number(formalPaidInput.value);
-    if (!Number.isFinite(paid) || paid <= 0) {
-      ElMessage.warning('请填写实缴金额（需大于 0）');
+    if (!Number.isFinite(due) || due <= 0) {
+      ElMessage.warning('请至少勾选一项费用，并确认金额大于 0');
       return;
     }
-    // ★ 2026-10-16 用户口径：实缴不能大于应缴
-    if (paid > due) {
-      ElMessage.warning('实缴金额不能大于应缴金额');
-      return;
-    }
-    diff = due - paid; // ≥0 优惠（实缴已被钳制 ≤ 应缴）
+    diff = Number(formalDiscount.value);
     if (diff > 0) {
-      /**
-       * ★ 2026-10-26 用户口径：「优惠只能优惠学费，其他金额不可以优惠」
-       *
-       * 没勾学费 → 没有优惠的落点，直接拦住（不能把住宿费/餐费打折）。
-       */
-      if (!f.formalFeeTypes.includes(FeeType.TUITION)) {
-        ElMessage.warning(
-          '优惠只能抵扣学费：本次没勾「学费」。请勾选学费后重新填写实缴金额，或把实缴调回应缴金额',
-        );
-        return;
-      }
-      const tuitionStd = amountYuan(FeeType.TUITION, 28000);
-      if (diff > tuitionStd) {
-        ElMessage.warning(
-          `优惠金额过大：学费应缴 ¥${tuitionStd.toFixed(2)}，最多只能优惠这么多。请调整实缴金额。`,
-        );
-        return;
-      }
-      /**
-       * ★ 2026-10-26 用户口径：「优惠金额要有明确的名目」
-       *    有优惠就必须选名目，不允许只留一个说不清的差额。
-       */
       if (!f.discountReason) {
-        ElMessage.warning('请选择优惠名目（奖学金 / 活动优惠 / 困难减免…）');
+        ElMessage.warning('请选择优惠名目（活动优惠 / 团报优惠 / 困难减免…）');
         return;
       }
-      amountByType[FeeType.TUITION] = Math.round((tuitionStd - diff) * 100);
+      amountByType[FeeType.TUITION] = Math.round(Number(tuitionInput.value) * 100);
+    }
+    /** 应缴是标准价，真正要收的是实缴 —— 减免到 0 元也建不了单 */
+    if (formalActual.value <= 0) {
+      ElMessage.warning('实缴金额需大于 0，请检查学费金额与优惠');
+      return;
     }
   }
 
@@ -577,12 +585,119 @@ const suppPlan = ref<ConsultSupplementPlan | null>(null);
 const suppLoading = ref(false);
 const suppSaving = ref(false);
 const suppForm = ref({
-  amountYuan: undefined as number | undefined,
   payMethod: '',
   remark: '试学转正补缴尾款',
   dataUrl: '',
   voucherNo: '',
+  /**
+   * ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+   *
+   * 补费里学费填得比缺口少时，差额不是「少补」而是优惠，必须选名目
+   * （和「发起收费」同一套字典 DISCOUNT_REASONS）。
+   */
+  discountReason: '',
 });
+
+/**
+ * ★ 2026-10-27 补费明细（用户口径：「补费也要有具体明细」）
+ *
+ * 补费不再是一笔说不清来源的总额：把「还差的费用项」逐项列出来
+ * （学费 / 住宿费 / 餐费 / 保险费），老师按实收填，合计就是补费单金额。
+ * 明细随单据落库（item_detail），详情页会逐项显示，财务核对时有据可查。
+ */
+interface SuppItem {
+  feeType: number;
+  feeTypeName: string;
+  /** 该项应补（缺口，元） */
+  dueYuan: number;
+  /** 本次补缴（元）：默认 = 缺口，可改小；住宿费由「月数 × 450」算出来 */
+  amountYuan: number;
+  /** 没有缺口数据时的兜底行：允许自由填一笔（如全款已到账的追加补收） */
+  custom?: boolean;
+  /**
+   * ★ 2026-10-27 用户口径：「补费的话，住宿费是450每月，也要有详细可以修改那种」
+   *
+   * 住宿费不按「缺口总额」改，而是按【月数】补：月单价 × 月数 = 本次补缴。
+   * 只有 feeType = ACCOMMODATION 的行才有这三个字段。
+   */
+  months?: number;
+  /** 月单价（元），取财务标准 ÷ 6，取不到兜底 450 */
+  unitPriceYuan?: number;
+  /** 可补的最大月数 = 缺口 ÷ 月单价（向下取整，保证不超缺口） */
+  maxMonths?: number;
+}
+
+const suppItems = ref<SuppItem[]>([]);
+
+/** 补费合计（元）= 明细各项之和；后端也会自己再加一遍，不信任前端 total */
+const suppTotalYuan = computed(() =>
+  suppItems.value.reduce((s, i) => s + (Number(i.amountYuan) || 0), 0),
+);
+
+/**
+ * ★ 2026-10-27 补费里的学费优惠（元）
+ *
+ * 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」——
+ * 学费行填得比缺口少，差额走优惠（要有名目），不是「少补」。
+ * 其余费用项改小仍然只是少补（缺口还在），优惠只能从学费里出。
+ */
+const suppTuitionDiscount = computed(() => {
+  const row = suppItems.value.find(
+    (i) => Number(i.feeType) === FeeType.TUITION && !i.custom,
+  );
+  if (!row) return 0;
+  return Math.max(0, roundYuan(Number(row.dueYuan) - Number(row.amountYuan || 0)));
+});
+
+/** 补费明细的应缴合计（元）= 各行缺口之和；合计 − 应缴合计 = 优惠 */
+const suppDueTotalYuan = computed(() =>
+  suppItems.value.reduce((s, i) => s + (Number(i.dueYuan) || 0), 0),
+);
+
+/** 金额四舍五入到分（避免 450 × 3 这类浮点尾巴） */
+function roundYuan(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * 造一条补费明细行
+ *
+ * ★ 2026-10-27 住宿费按月：缺口 2700（= 450 × 6）在补费里变成「6 个月」，
+ *    老师按实际要补的月数选，金额 = 月单价 × 月数，向上不能超缺口。
+ */
+function makeSuppItem(feeType: number, feeTypeName: string, dueYuan: number): SuppItem {
+  const row: SuppItem = {
+    feeType,
+    feeTypeName,
+    dueYuan,
+    amountYuan: dueYuan,
+  };
+  if (feeType === FeeType.ACCOMMODATION) {
+    const unit = accommodationUnitPrice.value || 450;
+    /**
+     * 可补月数 = 缺口 ÷ 月单价（向下取整）：
+     *   · 缺口 2700 → 6 个月；缺口 1350（补过 3 个月）→ 3 个月；
+     *   · 缺口不足一个月（如 ¥200）→ 不给月数控件，退回普通金额输入，避免默认值超缺口。
+     */
+    const maxMonths = Math.min(12, Math.floor(dueYuan / unit + 1e-6));
+    if (maxMonths >= 1) {
+      row.unitPriceYuan = unit;
+      row.maxMonths = maxMonths;
+      row.months = maxMonths;
+      row.amountYuan = roundYuan(unit * maxMonths);
+    }
+  }
+  return row;
+}
+
+/** 改住宿月数 → 本次补缴金额跟着重算（金额不单独改，避免「改月数 + 改金额」双算） */
+function onSuppMonthsChange(row: SuppItem) {
+  const unit = row.unitPriceYuan || 450;
+  /** 0 个月 = 这次不补住宿费（与其他项「留 0」同一口径） */
+  const months = Math.max(0, Math.min(Number(row.months) || 0, row.maxMonths || 12));
+  row.months = months;
+  row.amountYuan = roundYuan(unit * months);
+}
 
 /**
  * 该学生是否已经补过费
@@ -612,12 +727,13 @@ function canSupplement(row: ConsultFeeOrder): boolean {
 async function openSupplement(row: ConsultFeeOrder) {
   suppRow.value = row;
   suppPlan.value = null;
+  suppItems.value = [];
   suppForm.value = {
-    amountYuan: undefined,
     payMethod: '',
     remark: '试学转正补缴尾款',
     dataUrl: '',
     voucherNo: '',
+    discountReason: '',
   };
   suppVisible.value = true;
 
@@ -625,11 +741,43 @@ async function openSupplement(row: ConsultFeeOrder) {
   try {
     const plan = await fetchSupplementPlan(row.consultStudentId);
     suppPlan.value = plan;
-    // 默认带出缺口，老师可改（缺口为 0 时留空，让他自己填）
-    const gap = Number(plan.missingAmount || 0) / 100;
-    if (gap > 0) suppForm.value.amountYuan = gap;
+    /**
+     * 只列「还差」的项（未发起 / 已驳回）：
+     *   · 已到账(ARRIVED)  → 不用补；
+     *   · 在途(PENDING)    → 钱已经在路上，不能重复补，等财务确认。
+     * 后端 `/supplement-plan` 已经把这两类算好了，直接用它的 missing。
+     */
+    const missing = new Set<number>(plan.missing || []);
+    const rows: SuppItem[] = (plan.items || [])
+      .filter((i) => missing.has(i.feeType) && Number(i.amount) > 0)
+      .map((i) => makeSuppItem(i.feeType, i.feeTypeName, Number(i.amount) / 100));
+
+    /**
+     * 兜底：缺口为 0（全款已到账/在途）时仍允许补一笔，
+     * 这时没有明细可拆，就退化成一行「补学费」让老师自己填金额。
+     */
+    suppItems.value = rows.length
+      ? rows
+      : [
+          {
+            feeType: FeeType.SUPPLEMENT,
+            feeTypeName: FEE_TYPE_NAME[FeeType.SUPPLEMENT] || '补学费',
+            dueYuan: 0,
+            amountYuan: 0,
+            custom: true,
+          },
+        ];
   } catch {
-    // 预览失败不影响补费：金额由老师手填
+    // 预览失败不影响补费：退化成一行自定义金额，老师照实收填
+    suppItems.value = [
+      {
+        feeType: FeeType.SUPPLEMENT,
+        feeTypeName: FEE_TYPE_NAME[FeeType.SUPPLEMENT] || '补学费',
+        dueYuan: 0,
+        amountYuan: 0,
+        custom: true,
+      },
+    ];
   } finally {
     suppLoading.value = false;
   }
@@ -654,11 +802,47 @@ async function submitSupplement() {
   const row = suppRow.value;
   if (!row) return;
 
-  const yuan = Number(suppForm.value.amountYuan);
-  if (!Number.isFinite(yuan) || yuan <= 0) {
-    ElMessage.warning('请填写补费金额（需大于 0）');
+  /**
+   * ★ 2026-10-27 明细校验（用户口径：「补费也要有具体明细」）
+   *   每项可以留 0（这次先不补这项），但整单不能都是 0；
+   *   合计由后端再算一遍，不信任前端传的 total。
+   */
+  /**
+   * ★ 2026-10-27 学费有优惠 → 名目必填（与「发起收费」同一铁律）
+   *   优惠只能从学费里出，所以只有学费行的差额会走这条校验。
+   */
+  if (suppTuitionDiscount.value > 0 && !suppForm.value.discountReason) {
+    ElMessage.warning('学费有优惠，请选择优惠名目（活动优惠 / 团报优惠 / 困难减免…）');
     return;
   }
+
+  const items = suppItems.value
+    .map((i) => {
+      const amount = Math.round((Number(i.amountYuan) || 0) * 100);
+      const dueAmount = Math.round((Number(i.dueYuan) || 0) * 100);
+      const isTuition = Number(i.feeType) === FeeType.TUITION && !i.custom;
+      return {
+        feeType: i.feeType,
+        amount,
+        // ★ 2026-10-27 住宿费带月数，单据备注/明细里能看出「450 × 3 个月」
+        ...(i.months != null ? { months: Number(i.months) } : {}),
+        /**
+         * ★ 2026-10-27 学费实缴 < 应缴：把应缴一起传上去，后端把差额记成优惠
+         *   （item_detail 的 standardAmount / discount / discountReason 三个字段），
+         *   这样财务看到的是「少收 700 元·团报优惠」，而不是「还欠 700」。
+         */
+        ...(isTuition && dueAmount > amount
+          ? { dueAmount, discountReason: suppForm.value.discountReason }
+          : {}),
+      };
+    })
+    .filter((i) => i.amount > 0);
+
+  if (!items.length) {
+    ElMessage.warning('请填写补费明细：至少一项金额要大于 0');
+    return;
+  }
+  const totalAmount = items.reduce((s, i) => s + i.amount, 0);
   if (!suppForm.value.payMethod) {
     ElMessage.warning('请选择缴费方式');
     return;
@@ -674,14 +858,19 @@ async function submitSupplement() {
     const up = await uploadFile(suppForm.value.dataUrl, 'voucher');
     const res = await createSupplementFee({
       consultStudentId: row.consultStudentId,
-      amount: Math.round(yuan * 100),
+      // 明细优先：后端按明细加总，amount 只作兼容字段
+      items,
+      amount: totalAmount,
       voucherUrl: up.url,
       voucherNo: suppForm.value.voucherNo || undefined,
       payMethod: suppForm.value.payMethod,
       remark: suppForm.value.remark || undefined,
     });
 
-    ElMessage.success(res ? `补费 ¥${yuan.toFixed(2)} 已发起，等待财务确认到账` : '补费已发起');
+    const yuanText = (totalAmount / 100).toFixed(2);
+    ElMessage.success(
+      res ? `补费 ¥${yuanText} 已发起，等待财务确认到账` : '补费已发起',
+    );
     suppVisible.value = false;
     load();
   } catch (err: any) {
@@ -1270,12 +1459,39 @@ onMounted(load);
             <el-checkbox v-for="i in FORMAL_FEE_ITEMS" :key="i.feeType" :value="i.feeType">
               <span class="fee-name">{{ i.label }}</span>
               <b class="fee-amt">¥{{ itemAmount(i).toFixed(2) }}</b>
-              <span v-if="itemCalc(i)" class="fee-calc">{{ itemCalc(i) }}</span>
+              <!-- ★ 2026-10-27 学费可改：在卡片上标一句，老师一眼知道这项能谈价 -->
+              <span v-if="i.feeType === FeeType.TUITION" class="fee-calc">可修改</span>
+              <span v-else-if="itemCalc(i)" class="fee-calc">{{ itemCalc(i) }}</span>
             </el-checkbox>
           </el-checkbox-group>
           <div v-if="!createForm.formalFeeTypes.length" class="stu-sub mt8">
             勾选本次要缴的费用项（可多选），合计会自动计算
           </div>
+        </el-form-item>
+
+        <!--
+          ★ 2026-10-27 用户口径：「正式学费里的学费可以修改，优惠是学费里的」
+            学费单独给一个金额输入（勾了学费才出现），默认财务标准价；
+            改小 → 差额就是学费优惠（下面「优惠金额」自动算，必须选名目）。
+            其他费用项不可改，一律按标准全额。
+        -->
+        <el-form-item
+          v-if="createForm.category === 'FORMAL' && createForm.formalFeeTypes.includes(FeeType.TUITION)"
+          label="学费金额"
+          required
+        >
+          <el-input-number
+            v-model="tuitionInput"
+            :min="0"
+            :max="tuitionStd"
+            :step="500"
+            :precision="2"
+            style="width: 200px"
+          />
+          <span class="fee-note">
+            财务标准 ¥{{ tuitionStd.toFixed(2) }}，可按谈定价修改；改小即为学费优惠 —— <b>应缴不变</b>，
+            实缴 = 应缴 − 优惠（其他费用项不参与优惠）
+          </span>
         </el-form-item>
 
         <!-- ★ 2026-10-26 住宿费按月缴纳：默认 6 个月，可自选 1~12 个月 -->
@@ -1304,18 +1520,16 @@ onMounted(load);
         <!-- 应缴 / 实缴 / 优惠（仅正式学费：试学费是谈定价，没有应缴/优惠的概念） -->
         <el-form-item v-if="createForm.category === 'FORMAL'" label="应缴金额">
           <b class="amount-strong">¥{{ formalDue.toFixed(2) }}</b>
-          <span class="fee-note">按财务费用标准自动计算</span>
+          <span class="fee-note">各项按财务标准价合计（学费改价不影响应缴）</span>
         </el-form-item>
-        <el-form-item v-if="createForm.category === 'FORMAL'" label="实缴金额" required>
-          <el-input-number
-            v-model="formalPaidInput"
-            :min="0"
-            :max="formalDue > 0 ? formalDue : Infinity"
-            :step="100"
-            :precision="2"
-            style="width: 200px"
-          />
-          <span class="fee-note">学生实际交的钱，不能大于应缴金额；少收的部分算作学费优惠</span>
+        <!--
+          ★ 2026-10-27 用户口径：「应缴不变，实缴优惠保持现状」
+            应缴恒为标准价合计；改学费只落到实缴和优惠两行。
+            实缴 = 应缴 − 优惠，也就是本次单据金额 / 合计。
+        -->
+        <el-form-item v-if="createForm.category === 'FORMAL'" label="实缴金额">
+          <b class="amount-strong">¥{{ formalActual.toFixed(2) }}</b>
+          <span class="fee-note">= 应缴 − 优惠</span>
         </el-form-item>
         <el-form-item v-if="createForm.category === 'FORMAL'" label="优惠金额">
           <b :class="formalDiscount > 0 ? 'discount-strong' : 'amount-strong'">
@@ -1324,12 +1538,11 @@ onMounted(load);
           <span v-if="formalDiscount <= 0" class="fee-note">无优惠</span>
           <!-- ★ 2026-10-26 优惠只能抵扣学费，其他费用项一律按标准全额收 -->
           <span v-else-if="!canDiscount" class="fee-note danger-text">
-            优惠只能抵扣学费，但本次没勾「学费」—— 请勾选学费，或把实缴调回应缴金额
+            优惠只能抵扣学费，但本次没勾「学费」—— 请勾选学费后再改学费金额
           </span>
-          <span v-else-if="discountTooMuch" class="fee-note danger-text">
-            优惠金额超过学费应缴（¥{{ amountYuan(FeeType.TUITION, 28000).toFixed(2) }}），请调整实缴金额
+          <span v-else class="fee-note">
+            学费标准 ¥{{ tuitionStd.toFixed(2) }} − 实收 ¥{{ tuitionInput.toFixed(2) }}，其余费用项不参与优惠
           </span>
-          <span v-else class="fee-note">从学费里扣（应缴 - 实缴），其余费用项不参与优惠</span>
         </el-form-item>
 
         <!--
@@ -1392,11 +1605,11 @@ onMounted(load);
     </el-dialog>
 
     <!-- ============ ★ 2026-10-20 补费（试学转正尾款 / 差额补收，金额自定义） ============ -->
-    <el-dialog v-model="suppVisible" title="补费" width="620px">
+    <el-dialog v-model="suppVisible" title="补费" width="820px">
       <el-alert type="success" :closable="false" show-icon class="mb">
         <template #title>
-          补费金额<strong>由老师自定义</strong>（按实际收到的钱填，可含优惠）。
-          补费单在列表里单独显示为「补学费」，不占用学费额度；
+          补费<strong>按费用项逐项填</strong>（默认带出还差多少，可按实收调小）。
+          补费单在列表里单独显示为「补学费」，明细随单保存、详情页可逐项回看；
           财务确认到账后，试学中的学员会自动转为正式在读。
         </template>
       </el-alert>
@@ -1429,17 +1642,116 @@ onMounted(load);
       </div>
 
       <el-form v-loading="suppLoading" label-width="120px">
-        <el-form-item label="补费金额（元）" required>
-          <el-input-number
-            v-model="suppForm.amountYuan"
-            :min="0"
-            :precision="2"
-            :step="100"
-            placeholder="自定义填写"
-            style="width: 220px"
-          />
-          <span class="fee-note" style="margin-left: 8px">
-            必填，可改（默认已带出缺口，可少于缺口）
+        <!-- ★ 2026-10-27 补费明细（用户口径：「补费也要有具体明细」） -->
+        <el-form-item label="补费明细" required>
+          <el-table :data="suppItems" size="small" border style="width: 100%">
+            <el-table-column prop="feeTypeName" label="费用项" min-width="90" />
+            <el-table-column label="应补（缺口）" width="175" align="right">
+              <template #default="{ row }">
+                <template v-if="row.custom">自定义</template>
+                <template v-else>
+                  ¥{{ Number(row.dueYuan).toFixed(2) }}
+                  <!-- ★ 2026-10-27 住宿费按月：缺口旁标出「450 元/月 · 缺口 6 个月」，让老师知道能按月补 -->
+                  <div v-if="row.months != null" class="fee-calc">
+                    {{ fmtYuan(row.unitPriceYuan || 450) }} 元/月 · 缺口 {{ row.maxMonths }} 个月
+                  </div>
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column label="本次补缴（元）" width="150">
+              <template #default="{ row }">
+                <!-- 住宿费按「月单价 × 月数」算，金额只读；其他项直接填金额 -->
+                <b v-if="row.months != null" class="amount-strong">
+                  ¥{{ Number(row.amountYuan).toFixed(2) }}
+                </b>
+                <el-input-number
+                  v-else
+                  v-model="row.amountYuan"
+                  :min="0"
+                  :max="row.custom ? undefined : row.dueYuan"
+                  :step="100"
+                  :precision="2"
+                  size="small"
+                  controls-position="right"
+                  style="width: 100%"
+                />
+              </template>
+            </el-table-column>
+            <!--
+              ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+                学费行实缴少于应补时，差额自动算成优惠（下面选名目），不是「少补」。
+                其他费用项不含优惠概念（改小 = 这次先少补，缺口还在）。
+            -->
+            <el-table-column label="优惠（元）" width="120" align="right">
+              <template #default="{ row }">
+                <b
+                  v-if="
+                    Number(row.feeType) === FeeType.TUITION &&
+                    !row.custom &&
+                    Number(row.dueYuan) - Number(row.amountYuan || 0) > 0
+                  "
+                  class="discount-strong"
+                >
+                  ¥{{ (Number(row.dueYuan) - Number(row.amountYuan || 0)).toFixed(2) }}
+                </b>
+                <span v-else class="fee-calc">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="住宿月数" width="120" align="center">
+              <template #default="{ row }">
+                <el-input-number
+                  v-if="row.months != null"
+                  v-model="row.months"
+                  :min="0"
+                  :max="row.maxMonths || 12"
+                  :step="1"
+                  :precision="0"
+                  size="small"
+                  controls-position="right"
+                  style="width: 100%"
+                  @change="onSuppMonthsChange(row)"
+                />
+                <span v-else class="fee-calc">—</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div class="stu-sub mt8">
+            默认按缺口带出，可按实收金额调小。某项留 0 表示这次不补这一项（缺口仍在）。
+            <br />
+            · <b>学费</b>实缴少于应补的部分自动算<b>优惠</b>（需选名目，优惠只能从学费里出）；
+            · 其他费用项改小只是这次少补，差额下次还能补。
+            <br />
+            · 住宿费按月补：{{ fmtYuan(accommodationUnitPrice) }} 元/月，改「住宿月数」即可，最多补到缺口月数。
+          </div>
+        </el-form-item>
+
+        <!--
+          ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+            学费有优惠才出现，且必选 —— 财务核对时要知道这笔少收的钱按什么批的。
+        -->
+        <el-form-item v-if="suppTuitionDiscount > 0" label="优惠名目" required>
+          <el-select
+            v-model="suppForm.discountReason"
+            placeholder="请选择优惠名目"
+            style="width: 240px"
+          >
+            <el-option v-for="r in DISCOUNT_REASONS" :key="r" :label="r" :value="r" />
+          </el-select>
+          <span class="fee-note">
+            学费优惠 ¥{{ suppTuitionDiscount.toFixed(2) }}（应补 − 实缴），名目会随单落库
+          </span>
+        </el-form-item>
+
+        <el-form-item label="补费合计">
+          <b class="amount-strong">¥{{ suppTotalYuan.toFixed(2) }}</b>
+          <span class="fee-note">= 明细实缴之和（落库为一张「补学费」单，明细随单保存）</span>
+        </el-form-item>
+
+        <!-- 应缴 / 实缴 / 优惠 三个口径对齐（仅学费有优惠时显示，避免平时多一行噪音） -->
+        <el-form-item v-if="suppTuitionDiscount > 0" label="应缴 / 优惠">
+          <span class="fee-note">
+            应缴 ¥{{ suppDueTotalYuan.toFixed(2) }} − 优惠 ¥{{ suppTuitionDiscount.toFixed(2) }}
+            = 实缴 ¥{{ suppTotalYuan.toFixed(2) }}
           </span>
         </el-form-item>
 
@@ -1543,6 +1855,41 @@ onMounted(load);
           <el-table-column prop="feeTypeName" label="费用项" />
           <el-table-column prop="amountYuan" label="金额" width="120" />
           <el-table-column prop="statusName" label="状态" width="120" />
+        </el-table>
+      </div>
+
+      <!--
+        ★ 2026-10-27 补费单的逐项明细（应缴 / 实缴 / 优惠 / 名目）
+          用户口径：「学费应缴比实缴多的算优惠」—— 看单的人要能一眼看出
+          学费是「优惠了 700」还是「还欠 700」，所以把三个口径都列出来。
+      -->
+      <div v-if="detailRow?.feeType === FeeType.SUPPLEMENT && detailRow?.itemDetail?.length" class="mt">
+        <div class="detail-label">补费明细（应缴 / 实缴 / 优惠）</div>
+        <el-table :data="detailRow.itemDetail" size="small" border>
+          <el-table-column prop="feeTypeName" label="费用项" min-width="110" />
+          <el-table-column label="应缴" width="120" align="right">
+            <template #default="{ row }">
+              ¥{{ ((row.standardAmount ?? row.amount) / 100).toFixed(2) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="实缴" width="120" align="right">
+            <template #default="{ row }">¥{{ (row.amount / 100).toFixed(2) }}</template>
+          </el-table-column>
+          <el-table-column label="优惠" width="150" align="right">
+            <template #default="{ row }">
+              <b v-if="Number(row.discount) > 0" class="discount-strong">
+                ¥{{ (Number(row.discount) / 100).toFixed(2) }}
+              </b>
+              <span v-else class="fee-calc">—</span>
+              <div v-if="row.discountReason" class="fee-calc">{{ row.discountReason }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="住宿月数" width="100" align="center">
+            <template #default="{ row }">
+              <span v-if="row.months" class="fee-calc">{{ row.months }} 个月</span>
+              <span v-else class="fee-calc">—</span>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
 

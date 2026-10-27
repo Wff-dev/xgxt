@@ -331,13 +331,31 @@ export function createFees(payload: ConsultFeeCreatePayload): Promise<ConsultFee
 
 /**
  * ★ 2026-10-20 补费（试学转正尾款 / 差额补收，金额自定义）
+ * ★ 2026-10-27 用户口径：「补费也要有具体明细」——按费用项逐项填，合计即单金额。
  *
- * 只对「已缴过试学费」的学生开放；金额由老师手填（单位：分）。
- * 落库类型是「补费(8)」，到账后自动把试学学员转成正式在读。
+ * 只对「已缴过试学费」的学生开放；金额单位：分。
+ * 落库类型仍是「补学费(8)」，到账后自动把试学学员转成正式在读。
  */
 export interface ConsultSupplementPayload {
   consultStudentId: string;
-  /** 补费金额（单位：分） */
+  /**
+   * 补费明细（优先）：学费 / 住宿费 / 餐费 / 保险费逐项金额（分）。
+   * 传了它，后端以明细加总为准，amount 只作兼容保留。
+   */
+  items?: Array<{
+    feeType: number;
+    amount: number;
+    /** 住宿费按月补的月数（1~12，仅住宿费项有意义） */
+    months?: number;
+    /**
+     * ★ 2026-10-27 该项应缴（分，= 补费弹窗里的缺口）。
+     * 传了且 > amount → 差额记优惠（只允许学费，且必须带 discountReason）。
+     */
+    dueAmount?: number;
+    /** 优惠名目（活动优惠 / 团报优惠 …，有优惠时必填） */
+    discountReason?: string;
+  }>;
+  /** 补费金额（单位：分）——没传 items 时的老口径「一笔自定义补费」 */
   amount: number;
   voucherUrl: string;
   voucherNo?: string;

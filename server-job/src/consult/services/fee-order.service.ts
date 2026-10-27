@@ -22,6 +22,8 @@ import {
   ConsultState,
   CONSULT_STATE_NAME,
   nameOf,
+  // ★ 2026-10-27 补费学费改小 → 差额记优惠，名目必须从固定字典里选
+  DISCOUNT_REASONS,
 } from 'shared-types/consult';
 import type {
   ConsultFeeOrder,
@@ -29,6 +31,8 @@ import type {
   ConsultFeeStats,
   ConsultFeeStatus,
   ConsultSupplementPlan,
+  // ★ 2026-10-27 补费明细（用户口径：「补费也要有具体明细」）
+  ConsultSupplementItem,
 } from 'shared-types/consult';
 import { ConsultFeeStatus as CFS, CONSULT_FEE_STATUS_NAME } from 'shared-types/consult';
 import { db } from '../utils/db';
@@ -390,6 +394,15 @@ export const PENDING_FEE_STATUSES: number[] = [CFS.NO_VOUCHER, CFS.PENDING];
 
 /** 一张收款单覆盖的费用类型：合并单读 item_detail，老数据读 fee_type */
 export function typesOfOrder(row: any): FeeType[] {
+  /**
+   * ★ 2026-10-27 补费单必须先按 fee_type 返回 [补学费]
+   *
+   * 补费单的 item_detail 现在是逐项明细（学费 / 住宿费 / 餐费 / 保险费），
+   * 但它业务上仍是一张「补学费」：不占用学费额度、不参与「全款是否到齐」判定。
+   * 若让它按明细返回，补费到账后会被当成「学费已到账」，
+   * 转正式的缺口就会凭空消失 —— 属于会把业务算错的坑，必须挡住。
+   */
+  if (Number(row?.fee_type) === FeeType.SUPPLEMENT) return [FeeType.SUPPLEMENT];
   if (row?.item_detail) {
     try {
       const arr = JSON.parse(row.item_detail);
@@ -753,7 +766,7 @@ export async function createCombinedFees(
   if (discountTotal > 0 && !reason) {
     throw new BizError(
       BizCode.PARAM_ERROR,
-      `本次优惠 ¥${centToYuan(discountTotal)} 需要选择优惠名目（奖学金 / 活动优惠 / 困难减免…），否则财务无法核对`,
+      `本次优惠 ¥${centToYuan(discountTotal)} 需要选择优惠名目（活动优惠 / 团报优惠 / 困难减免…），否则财务无法核对`,
     );
   }
   /** 优惠名目的落地值：没优惠就不留痕（避免「无优惠」的单子上挂着名目） */
@@ -1003,7 +1016,7 @@ export async function createFees(
       if (singleDiscount > 0 && !singleReason) {
         throw new BizError(
           BizCode.PARAM_ERROR,
-          `${feeTypeName} 优惠 ¥${centToYuan(singleDiscount)} 需要选择优惠名目（奖学金 / 活动优惠 / 困难减免…），否则财务无法核对`,
+          `${feeTypeName} 优惠 ¥${centToYuan(singleDiscount)} 需要选择优惠名目（活动优惠 / 团报优惠 / 困难减免…），否则财务无法核对`,
         );
       }
 
@@ -1146,7 +1159,17 @@ export async function createFees(
  * ============================================================ */
 export async function createSupplementFee(
   consultStudentId: string,
-  amount: number,
+  /**
+   * ★ 2026-10-27 用户口径：「补费也要有具体明细」
+   *
+   *   · 传数组 → 按费用项逐项补（学费 / 住宿费 / 餐费 / 保险费），合计即补费单金额；
+   *   · 传数字 → 老调用方的「一笔自定义补费」，内部等价于 [{ feeType: SUPPLEMENT, amount }]。
+   *
+   * ⚠️ 落库的 fee_type 仍是 SUPPLEMENT（一张「补学费」单）：
+   *    明细只进 item_detail，不能拆成多张单 —— 否则会占用学费额度、
+   *    还会让「全款是否到齐」「补费转正」这些判定算错。
+   */
+  amountOrItems: number | ConsultSupplementItem[],
   operator: { name: string; title?: string },
   opts: {
     /** ★ 只要缴费就要有凭证 —— 与发起收费同一铁律 */
@@ -1161,6 +1184,106 @@ export async function createSupplementFee(
   if (!stu) {
     throw new BizError(BizCode.STUDENT_NOT_FOUND, '学生不存在');
   }
+
+  /* ---------- 明细归一化：只保留金额 > 0 的项，合计即单据金额 ---------- */
+  const rawItems: ConsultSupplementItem[] = Array.isArray(amountOrItems)
+    ? amountOrItems
+    : [{ feeType: FeeType.SUPPLEMENT, amount: Number(amountOrItems) }];
+
+  const detailItems = rawItems
+    .map((i) => {
+      const amount = Math.round(Number(i?.amount));
+      /**
+       * ★ 2026-10-27 用户口径：「学费如果应缴的比实缴少的话，也是算到优惠里面」
+       *
+       * dueAmount = 该项应缴（补费弹窗里的缺口）。不传时等于 amount（老调用方无优惠）。
+       * 传了且 > amount → 差额是优惠，不是「少补」：必须有名目，且只允许学费。
+       */
+      const dueAmount = i?.dueAmount == null ? amount : Math.round(Number(i.dueAmount));
+      return {
+        feeType: Number(i?.feeType),
+        amount,
+        dueAmount,
+        /** 优惠（分）= 应缴 − 实缴，恒 ≥ 0（实缴比应缴还大属于录错，下面拦掉） */
+        discount: Math.max(0, dueAmount - amount),
+        discountReason: (i?.discountReason || '').trim(),
+        /** ★ 住宿费按月补时带上月数（只用于展示，金额仍以 amount 为准） */
+        months: i?.months == null ? null : Number(i.months),
+      };
+    })
+    .filter((i) => Number.isFinite(i.amount) && i.amount > 0);
+
+  if (!detailItems.length) {
+    throw new BizError(BizCode.PARAM_ERROR, '补费金额必须大于 0');
+  }
+
+  /**
+   * 明细里的费用项只允许「全款 4 项」或兜底的自定义补费项 ——
+   * 直接调接口塞个乱七八糟的类型进来，账单就废了。
+   */
+  const allowedTypes = new Set<number>([...FULL_FEE_TYPES, FeeType.SUPPLEMENT]);
+  const seenTypes = new Set<number>();
+  for (const i of detailItems) {
+    if (!allowedTypes.has(i.feeType)) {
+      throw new BizError(BizCode.PARAM_ERROR, `补费明细里的费用项不合法（${i.feeType}）`);
+    }
+    if (seenTypes.has(i.feeType)) {
+      throw new BizError(
+        BizCode.PARAM_ERROR,
+        `补费明细里「${nameOf(FEE_TYPE_NAME, i.feeType)}」出现了两次，请合并成一行`,
+      );
+    }
+    seenTypes.add(i.feeType);
+
+    /**
+     * ★ 2026-10-27 应缴 / 实缴 / 优惠：和「发起收费」同一套铁律
+     *
+     *   ① 实缴不能大于应缴（多收要改应缴，不能凭空多一笔）；
+     *   ② 优惠只能从【学费】里出，住宿费/餐费/保险一律按应缴全额补；
+     *   ③ 有优惠必须有名目 —— 财务要知道这笔少收的钱按什么批的。
+     */
+    if (i.amount > i.dueAmount) {
+      throw new BizError(
+        BizCode.PARAM_ERROR,
+        `「${nameOf(FEE_TYPE_NAME, i.feeType)}」本次补缴不能大于应补（¥${centToYuan(i.dueAmount)}）`,
+      );
+    }
+    if (i.discount > 0) {
+      if (i.feeType !== FeeType.TUITION) {
+        throw new BizError(
+          BizCode.PARAM_ERROR,
+          `优惠只能抵扣学费，「${nameOf(FEE_TYPE_NAME, i.feeType)}」请按应补金额全额补缴`,
+        );
+      }
+      if (!i.discountReason) {
+        throw new BizError(BizCode.PARAM_ERROR, '学费有优惠，请选择优惠名目（活动优惠 / 团报优惠 …）');
+      }
+      if (!(DISCOUNT_REASONS as readonly string[]).includes(i.discountReason)) {
+        throw new BizError(
+          BizCode.PARAM_ERROR,
+          `优惠名目「${i.discountReason}」不在可选范围内，请从 ${DISCOUNT_REASONS.join(' / ')} 里选`,
+        );
+      }
+    }
+  }
+
+  /** 单据金额 = 明细合计（不信任前端传的 total，一律后端自己加） */
+  const amount = detailItems.reduce((s, i) => s + i.amount, 0);
+  const detailText = detailItems
+    .map((i) => {
+      const base = `${nameOf(FEE_TYPE_NAME, i.feeType)} ¥${centToYuan(i.amount)}${
+        i.months ? `（${i.months} 个月）` : ''
+      }`;
+      /** ★ 2026-10-27 学费改小的差额是优惠，备注里写清「应缴多少、优惠多少、什么名目」 */
+      return i.discount > 0
+        ? `${base}（应缴 ¥${centToYuan(i.dueAmount)}，优惠 ¥${centToYuan(i.discount)}·${i.discountReason}）`
+        : base;
+    })
+    .join(' / ');
+
+  /** 整单优惠合计（分）：只有学费项可能 > 0 */
+  const totalDiscount = detailItems.reduce((s, i) => s + i.discount, 0);
+
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new BizError(BizCode.PARAM_ERROR, '补费金额必须大于 0');
   }
@@ -1226,7 +1349,6 @@ export async function createSupplementFee(
 
   const deptCode: DeptCode = stu.dept_code || DeptCode.JUNIOR_SENIOR;
   const studentNo = stu.student_no || tempStudentNo(consultStudentId);
-  const feeTypeName = nameOf(FEE_TYPE_NAME, FeeType.SUPPLEMENT);
   const remark = (opts.remark || '').trim() || '试学转正补缴尾款';
 
   /* ---------- 1. 先让财务建单（金额直接传，不让财务按标准取） ---------- */
@@ -1243,7 +1365,29 @@ export async function createSupplementFee(
     amount,
     voucherUrl: opts.voucherUrl,
     voucherNo: opts.voucherNo,
-    remark: `咨询模块补费（${operator.name}）：${remark}`,
+    /**
+     * ★ 2026-10-27 补费明细也发给财务（用户口径：「补费的费用分别到每一栏」）
+     *
+     * 补费单本身是「补学费」（fee_type=8），但钱里可能同时有学费/住宿费/餐费/保险费。
+     * 只传合计的话，财务核对入账会记成一条「补学费」，整笔钱全落进
+     * 「学费缴费记录」，住宿费/餐费/保险费三栏永远是 0（用户录屏反馈）。
+     *
+     * 传了明细，财务核对时按分项拆成多条账单：
+     *   · 学费 → 学费栏（没有到期日）
+     *   · 住宿费/餐费/保险费 → 各自那一栏，并按缴费完成日算到期日
+     * 正式收费（同文件上方的 createFeeOrder）早就这么传了，这里补齐。
+     */
+    itemDetail: detailItems.map((i) => ({
+      feeType: i.feeType,
+      feeTypeName: nameOf(FEE_TYPE_NAME, i.feeType),
+      amount: i.amount,
+      standardAmount: i.dueAmount,
+      discount: i.discount,
+      discountReason: i.discountReason || undefined,
+      months: i.months ?? undefined,
+    })),
+    // ★ 2026-10-27 明细写进财务备注，财务核对时能直接看到这笔钱由哪几项构成
+    remark: `咨询模块补费（${operator.name}）：${remark}｜明细：${detailText}`,
   });
 
   /* ---------- 2. 本地落库 ---------- */
@@ -1267,16 +1411,32 @@ export async function createSupplementFee(
     voucher_by: operator.name,
     pay_method: opts.payMethod || null,
     batch_no: Date.now(),
-    item_detail: JSON.stringify([
-      {
-        feeType: FeeType.SUPPLEMENT,
-        feeTypeName,
-        amount,
-        /** 补费没有「标准价」，应缴就是老师填的数，优惠恒为 0 */
-        standardAmount: amount,
-        discount: 0,
-      },
-    ]),
+    /**
+     * ★ 2026-10-27 补费明细逐项落库（用户口径：「补费也要有具体明细」）
+     *
+     * 单据本身仍是一张「补学费」（fee_type=8），item_detail 记的是
+     * 「这次补的钱分别抵了哪些费用项」，详情页会按这张表逐项列出。
+     *
+     * ★ 2026-10-27 学费改小 → 差额记优惠（用户口径：「应缴比实缴多的算优惠」）：
+     *    standardAmount 记该项应缴（缺口），discount 记差额，
+     *    这样列表/详情的「应缴 / 优惠 / 实缴」三个数能对上，也不会被当成「欠着没补」。
+     */
+    item_detail: JSON.stringify(
+      detailItems.map((i) => ({
+        feeType: i.feeType,
+        feeTypeName: nameOf(FEE_TYPE_NAME, i.feeType),
+        amount: i.amount,
+        standardAmount: i.dueAmount,
+        discount: i.discount,
+        ...(i.discount > 0 ? { discountReason: i.discountReason } : {}),
+        /** ★ 住宿费按月补的月数（见 ConsultSupplementItem.months） */
+        ...(i.months ? { months: i.months } : {}),
+      })),
+    ),
+    // ★ 2026-10-27 整单优惠名目（学费有优惠才有值，没优惠留 NULL）
+    discount_reason: totalDiscount > 0
+      ? detailItems.find((i) => i.discount > 0)?.discountReason || null
+      : null,
     create_time: new Date(),
     create_by: operator.name,
     create_by_name: operator.name,
@@ -1287,7 +1447,7 @@ export async function createSupplementFee(
   await addHistory(
     consultStudentId,
     operator.name,
-    `发起补费 ¥${centToYuan(amount)}（${remark}），凭证已随单上传，等待财务确认到账`,
+    `发起补费 ¥${centToYuan(amount)}（${remark}）｜明细：${detailText}；凭证已随单上传，等待财务确认到账`,
     operator.title,
     'SUPPLEMENT',
   );
@@ -1308,7 +1468,7 @@ export async function createSupplementFee(
         byName: operator.name,
         byTitle: operator.title,
         action: 'FEE_SUPPLEMENT',
-        historyText: `发起补费 ¥${centToYuan(amount)}（${remark}），待财务确认到账后转正式在读`,
+        historyText: `发起补费 ¥${centToYuan(amount)}（${remark}）｜明细：${detailText}，待财务确认到账后转正式在读`,
       });
     } catch (e: any) {
       // 状态没推进不影响单据本身：钱和单已经落库，财务核对后到账逻辑还会兜一次
@@ -2091,6 +2251,14 @@ export async function getSupplementPlan(
   >();
   for (const r of rows) {
     if (!r.item_detail) continue;
+    /**
+     * ★ 2026-10-27 补费单不参与缺口计算
+     *
+     * 补费明细里现在会出现「学费 / 餐费」这些项，但补费单本身不计入全款额度
+     * （见 createSupplementFee 的口径）。若把它当合并单登记进去，
+     * 补费一发起就会把学费判成「在途」→ 转正式时缺口凭空少一块。
+     */
+    if (Number(r.fee_type) === FeeType.SUPPLEMENT) continue;
     let detail: Array<{ feeType: number; amount: number }> = [];
     try {
       detail = JSON.parse(r.item_detail);

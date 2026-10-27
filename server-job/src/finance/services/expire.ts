@@ -43,6 +43,10 @@ export const EXPIRE_FEE_TYPES: number[] = [
  * @param payDate   本次缴费日 YYYY-MM-DD
  * @param stdAmount 该部门该费用标准价（分）；<=0 视为没配置 → 返回 null（不瞎算）
  * @param prevExpire 该生该费用「已入账」的最晚到期日（续费接续用）
+ * @param months    ★ 2026-10-27 已知周期（**月**），给了就直接用，不再反推
+ *                  （补费是「按 N 个月补」，老师填的月数就是准的；标准价改过以后
+ *                   「金额÷标准价」会算错月份，所以有明确月数时以月数为准。
+ *                   保险费按年填的，调用方先折算成月再传进来。）
  */
 export function computeExpireDate(opts: {
   feeType: number;
@@ -50,18 +54,26 @@ export function computeExpireDate(opts: {
   payDate: string;
   stdAmount: number;
   prevExpire?: string | null;
+  months?: number | null;
 }): string | null {
   const unit = expireUnitOf(opts.feeType);
   if (!unit) return null;
 
-  const std = Number(opts.stdAmount) || 0;
-  if (std <= 0) return null;
+  const hint = Number(opts.months) || 0;
+  let months: number;
+  if (hint > 0) {
+    // 知道确切补了几个月 → 直接用（标准价没配也照样能算出来）
+    months = hint;
+  } else {
+    const std = Number(opts.stdAmount) || 0;
+    if (std <= 0) return null;
 
-  const paid = Number(opts.amount) || 0;
-  // 缴了钱至少给一个周期（优惠后不足一个标准价时，不能让到期日不动）
-  let units = Math.floor(paid / std);
-  if (units < 1) units = 1;
-  const months = unit === 'Y' ? units * 12 : units;
+    const paid = Number(opts.amount) || 0;
+    // 缴了钱至少给一个周期（优惠后不足一个标准价时，不能让到期日不动）
+    let units = Math.floor(paid / std);
+    if (units < 1) units = 1;
+    months = unit === 'Y' ? units * 12 : units;
+  }
 
   const payDate = String(opts.payDate || '').slice(0, 10);
   if (!payDate) return null;
