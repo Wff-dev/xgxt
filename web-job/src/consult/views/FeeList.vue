@@ -173,7 +173,15 @@ const accommodationAmount = computed(() => accommodationUnitPrice.value * accomm
  *
  * ⚠️ 为什么不再单独搞一个「实缴金额」输入框：
  *    两套减免入口（改学费 / 改实缴）容易双算，账面对不上。
- *    现在减免只有一个来源 —— 学费，实缴 = 应缴（各项之和）。
+ *    现在减免只有一个来源 —— 学费。
+ *
+ * ★ 2026-10-27 用户口径：「应缴不变，实缴优惠保持现状」
+ *    改学费只影响「实缴」和「优惠」，**不改应缴**：
+ *      应缴 = 各项财务标准之和（学费 28000 + 住宿 …），始终是标准价；
+ *      优惠 = 学费标准 − 学费实收；
+ *      实缴 = 应缴 − 优惠 = 合计 = 本次实际收取。
+ *    这样账面恒等（28000 − 2000 = 26000），也和库里
+ *    standardAmount / amount / discount 三个字段一一对应。
  */
 const tuitionAmount = ref<number | null>(null);
 
@@ -328,11 +336,12 @@ function fmtYuan(n: number): string {
  *
  * ★ 2026-10-26 住宿费按月计价：应缴 = 月单价 × 月数（默认 6 个月）；
  *    其余各项仍按财务费用标准取值。
+ * ★ 2026-10-27 学费这里取【财务标准价】—— 应缴不随谈定价变化，
+ *    改学费只体现在下面的「实缴 / 优惠」两行。
  */
 function itemAmount(item: { feeType: number; fallback: number }): number {
   if (item.feeType === FeeType.ACCOMMODATION) return accommodationAmount.value;
-  // ★ 2026-10-27 学费按老师改过的谈定价（未改则等于财务标准）
-  if (item.feeType === FeeType.TUITION) return tuitionInput.value;
+  if (item.feeType === FeeType.TUITION) return tuitionStd.value;
   return amountYuan(item.feeType, item.fallback);
 }
 
@@ -346,14 +355,13 @@ function itemCalc(item: { feeType: number }): string {
  * 本次发起的合计金额（单位：元）
  *
  * ★ 2026-10-26 试学费：合计 = 老师填的试学费金额（试学费没有优惠概念）。
- * ★ 2026-10-27 正式学费：合计 = 应缴（学费按修改后 + 其他项按标准），
- *    优惠已经在学费里减掉了，不再有独立的「实缴」输入。
+ * ★ 2026-10-27 正式学费：合计 = 实缴 = 应缴 − 优惠（优惠已在学费里减掉）。
  */
 const createTotal = computed(() =>
-  createForm.value.category === 'TRIAL' ? trialAmountInput.value : formalDue.value,
+  createForm.value.category === 'TRIAL' ? trialAmountInput.value : formalActual.value,
 );
 
-/** 正式学费的【应缴】合计（元）：勾选各项的财务标准之和（学费按谈定价、住宿费按月数） */
+/** 正式学费的【应缴】合计（元）：勾选各项的财务标准之和（住宿费按月数） */
 const formalDue = computed(() =>
   createForm.value.formalFeeTypes.reduce((sum, ft) => {
     const item = FORMAL_FEE_ITEMS.find((i) => i.feeType === ft);
@@ -371,6 +379,14 @@ const formalDiscount = computed(() => {
   if (!createForm.value.formalFeeTypes.includes(FeeType.TUITION)) return 0;
   return Math.max(0, tuitionStd.value - tuitionInput.value);
 });
+
+/**
+ * 正式学费的【实缴】合计（元）= 应缴 − 优惠
+ *
+ * 用户口径：「应缴不变，实缴优惠保持现状」—— 应缴是标准价合计，
+ * 实缴才是本次真正要收的钱，也是单据金额。
+ */
+const formalActual = computed(() => Math.max(0, formalDue.value - formalDiscount.value));
 
 /** 是否勾了学费（只有勾了学费才可能产生优惠） */
 const canDiscount = computed(() => createForm.value.formalFeeTypes.includes(FeeType.TUITION));
@@ -500,6 +516,11 @@ async function submitCreate() {
         return;
       }
       amountByType[FeeType.TUITION] = Math.round(Number(tuitionInput.value) * 100);
+    }
+    /** 应缴是标准价，真正要收的是实缴 —— 减免到 0 元也建不了单 */
+    if (formalActual.value <= 0) {
+      ElMessage.warning('实缴金额需大于 0，请检查学费金额与优惠');
+      return;
     }
   }
 
@@ -1365,7 +1386,8 @@ onMounted(load);
             style="width: 200px"
           />
           <span class="fee-note">
-            财务标准 ¥{{ tuitionStd.toFixed(2) }}，可按谈定价修改；改小即为学费优惠（其他费用项不参与优惠）
+            财务标准 ¥{{ tuitionStd.toFixed(2) }}，可按谈定价修改；改小即为学费优惠 —— <b>应缴不变</b>，
+            实缴 = 应缴 − 优惠（其他费用项不参与优惠）
           </span>
         </el-form-item>
 
@@ -1395,15 +1417,16 @@ onMounted(load);
         <!-- 应缴 / 实缴 / 优惠（仅正式学费：试学费是谈定价，没有应缴/优惠的概念） -->
         <el-form-item v-if="createForm.category === 'FORMAL'" label="应缴金额">
           <b class="amount-strong">¥{{ formalDue.toFixed(2) }}</b>
-          <span class="fee-note">学费按修改后金额 + 其他项按财务标准自动计算</span>
+          <span class="fee-note">各项按财务标准价合计（学费改价不影响应缴）</span>
         </el-form-item>
         <!--
-          ★ 2026-10-27 实缴不再单独输入：减免只有一个入口（改学费），
-            实缴恒等于应缴，避免「改学费 + 改实缴」双算。
+          ★ 2026-10-27 用户口径：「应缴不变，实缴优惠保持现状」
+            应缴恒为标准价合计；改学费只落到实缴和优惠两行。
+            实缴 = 应缴 − 优惠，也就是本次单据金额 / 合计。
         -->
         <el-form-item v-if="createForm.category === 'FORMAL'" label="实缴金额">
-          <b class="amount-strong">¥{{ formalDue.toFixed(2) }}</b>
-          <span class="fee-note">= 应缴（优惠已在「学费金额」里减掉）</span>
+          <b class="amount-strong">¥{{ formalActual.toFixed(2) }}</b>
+          <span class="fee-note">= 应缴 − 优惠</span>
         </el-form-item>
         <el-form-item v-if="createForm.category === 'FORMAL'" label="优惠金额">
           <b :class="formalDiscount > 0 ? 'discount-strong' : 'amount-strong'">
@@ -1437,7 +1460,7 @@ onMounted(load);
         <el-form-item label="合计金额">
           <b class="amount-strong">¥{{ createTotal.toFixed(2) }}</b>
           <span class="fee-note">
-            {{ createForm.category === 'TRIAL' ? '本次实际收取（= 试学费金额）' : '本次实际收取（= 应缴）' }}
+            {{ createForm.category === 'TRIAL' ? '本次实际收取（= 试学费金额）' : '本次实际收取（= 实缴）' }}
           </span>
         </el-form-item>
 
